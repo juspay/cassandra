@@ -248,6 +248,7 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.locator.InetAddressAndPort",
     "org.apache.cassandra.locator.Replica",
     "org.apache.cassandra.locator.ReplicaCollection",
+    "org.apache.cassandra.locator.HttpSeedProvider",
     "org.apache.cassandra.locator.SeedProvider",
     "org.apache.cassandra.locator.SimpleSeedProvider",
     "org.apache.cassandra.security.EncryptionContext",

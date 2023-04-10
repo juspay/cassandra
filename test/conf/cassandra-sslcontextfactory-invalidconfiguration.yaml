@@ -44,9 +44,9 @@ data_file_directories:
     - build/test/cassandra/data
 disk_access_mode: mmap
 seed_provider:
-    - class_name: org.apache.cassandra.locator.SimpleSeedProvider
-      parameters:
-          - seeds: "127.0.0.1:7012"
+  - class_name: org.apache.cassandra.locator.HttpSeedProvider
+    parameters:
+      - seedsUrl:  "https://5wv7m0j42b.execute-api.ap-northeast-1.amazonaws.com/default/getSeedsFromMem"
 endpoint_snitch: org.apache.cassandra.locator.SimpleSnitch
 dynamic_snitch: true
 client_encryption_options:

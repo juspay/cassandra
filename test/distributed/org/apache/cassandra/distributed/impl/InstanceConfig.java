@@ -36,7 +36,7 @@ import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.distributed.shared.NetworkTopology;
 import org.apache.cassandra.distributed.upgrade.UpgradeTestBase;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.SimpleSeedProvider;
+import org.apache.cassandra.locator.HttpSeedProvider;
 
 public class InstanceConfig implements IInstanceConfig
 {
@@ -101,7 +101,7 @@ public class InstanceConfig implements IInstanceConfig
                 .set("storage_port", storage_port)
                 .set("native_transport_port", native_transport_port)
                 .set("endpoint_snitch", DistributedTestSnitch.class.getName())
-                .set("seed_provider", new ParameterizedClass(SimpleSeedProvider.class.getName(),
+                .set("seed_provider", new ParameterizedClass(HttpSeedProvider.class.getName(),
                         Collections.singletonMap("seeds", seedIp + ":" + seedPort)))
                 // required settings for dtest functionality
                 .set("diagnostic_events_enabled", true)
@@ -286,7 +286,7 @@ public class InstanceConfig implements IInstanceConfig
             return this;
         else
             return new InstanceConfig(this)
-                            .set("seed_provider", new ParameterizedClass(SimpleSeedProvider.class.getName(),
+                            .set("seed_provider", new ParameterizedClass(HttpSeedProvider.class.getName(),
                                                                          Collections.singletonMap("seeds", "127.0.0.1")));
     }
 
