@@ -193,7 +193,7 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.io.util.PathUtils$IOToLongFunction",
     "org.apache.cassandra.locator.Replica",
     "org.apache.cassandra.locator.ReplicaCollection",
-    "org.apache.cassandra.locator.SimpleSeedProvider",
+    "org.apache.cassandra.locator.HttpSeedProvider",
     "org.apache.cassandra.locator.SeedProvider",
     "org.apache.cassandra.security.ISslContextFactory",
     "org.apache.cassandra.security.SSLFactory",

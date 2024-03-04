@@ -26,7 +26,7 @@ data_file_directories:
 - build/test/cassandra/data
 disk_access_mode: mmap
 seed_provider:
-- class_name: org.apache.cassandra.locator.SimpleSeedProvider
+- class_name: org.apache.cassandra.locator.HttpSeedProvider
   parameters:
   - seeds: "127.0.0.1:7010"
 endpoint_snitch: org.apache.cassandra.locator.SimpleSnitch

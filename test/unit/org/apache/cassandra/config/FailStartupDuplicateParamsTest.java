@@ -50,7 +50,7 @@ public class FailStartupDuplicateParamsTest
         "data_file_directories:",
         "   - build/test/cassandra/data",
         "seed_provider:" ,
-        "   - class_name: org.apache.cassandra.locator.SimpleSeedProvider",
+        "   - class_name: org.apache.cassandra.locator.HttpSeedProvider",
         "parameters:",
         "   - seeds: \"127.0.0.1:7012\"",
         "endpoint_snitch: org.apache.cassandra.locator.SimpleSnitch");
