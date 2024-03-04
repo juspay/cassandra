@@ -66,7 +66,7 @@ public class YamlConfigurationLoaderTest
         Config config = new Config();
         Map<String, Object> map = ImmutableMap.<String, Object>builder().put("storage_port", 123)
                                                                         .put("commitlog_sync", Config.CommitLogSync.batch)
-                                                                        .put("seed_provider.class_name", "org.apache.cassandra.locator.SimpleSeedProvider")
+                                                                        .put("seed_provider.class_name", "org.apache.cassandra.locator.HttpSeedProvider")
                                                                         .put("client_encryption_options.cipher_suites", Collections.singletonList("FakeCipher"))
                                                                         .put("client_encryption_options.optional", false)
                                                                         .put("client_encryption_options.enabled", true)
@@ -75,7 +75,7 @@ public class YamlConfigurationLoaderTest
         assert updated == config : "Config pointers do not match";
         assertThat(config.storage_port).isEqualTo(123);
         assertThat(config.commitlog_sync).isEqualTo(Config.CommitLogSync.batch);
-        assertThat(config.seed_provider.class_name).isEqualTo("org.apache.cassandra.locator.SimpleSeedProvider");
+        assertThat(config.seed_provider.class_name).isEqualTo("org.apache.cassandra.locator.HttpSeedProvider");
         assertThat(config.client_encryption_options.cipher_suites).isEqualTo(Collections.singletonList("FakeCipher"));
         assertThat(config.client_encryption_options.optional).isFalse();
         assertThat(config.client_encryption_options.enabled).isTrue();
@@ -94,7 +94,7 @@ public class YamlConfigurationLoaderTest
         try (WithProperties ignore = new WithProperties(CONFIG_ALLOW_SYSTEM_PROPERTIES.getKey(), "true",
                                                         SYSTEM_PROPERTY_PREFIX + "storage_port", "123",
                                                         SYSTEM_PROPERTY_PREFIX + "commitlog_sync", "batch",
-                                                        SYSTEM_PROPERTY_PREFIX + "seed_provider.class_name", "org.apache.cassandra.locator.SimpleSeedProvider",
+                                                        SYSTEM_PROPERTY_PREFIX + "seed_provider.class_name", "org.apache.cassandra.locator.HttpSeedProvider",
 //                                                        PROPERTY_PREFIX + "client_encryption_options.cipher_suites", "[\"FakeCipher\"]",
                                                         SYSTEM_PROPERTY_PREFIX + "client_encryption_options.optional", "false",
                                                         SYSTEM_PROPERTY_PREFIX + "client_encryption_options.enabled", "true",
@@ -104,7 +104,7 @@ public class YamlConfigurationLoaderTest
             Config config = YamlConfigurationLoader.fromMap(Collections.emptyMap(), true, Config.class);
             assertThat(config.storage_port).isEqualTo(123);
             assertThat(config.commitlog_sync).isEqualTo(Config.CommitLogSync.batch);
-            assertThat(config.seed_provider.class_name).isEqualTo("org.apache.cassandra.locator.SimpleSeedProvider");
+            assertThat(config.seed_provider.class_name).isEqualTo("org.apache.cassandra.locator.HttpSeedProvider");
 //            assertThat(config.client_encryption_options.cipher_suites).isEqualTo(Collections.singletonList("FakeCipher"));
             assertThat(config.client_encryption_options.optional).isFalse();
             assertThat(config.client_encryption_options.enabled).isTrue();
@@ -221,7 +221,7 @@ public class YamlConfigurationLoaderTest
     {
         int storagePort = 123;
         Config.CommitLogSync commitLogSync = Config.CommitLogSync.batch;
-        ParameterizedClass seedProvider = new ParameterizedClass("org.apache.cassandra.locator.SimpleSeedProvider", Collections.emptyMap());
+        ParameterizedClass seedProvider = new ParameterizedClass("org.apache.cassandra.locator.HttpSeedProvider", Collections.emptyMap());
         Map<String,Object> encryptionOptions = ImmutableMap.of("cipher_suites", Collections.singletonList("FakeCipher"),
                                                                "optional", false,
                                                                "enabled", true);

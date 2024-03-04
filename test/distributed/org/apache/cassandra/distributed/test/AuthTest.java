@@ -38,7 +38,7 @@ import org.apache.cassandra.distributed.api.IInvokableInstance;
 import org.apache.cassandra.distributed.api.IMessageFilters.Filter;
 import org.apache.cassandra.distributed.api.TokenSupplier;
 import org.apache.cassandra.distributed.util.Auth;
-import org.apache.cassandra.locator.SimpleSeedProvider;
+import org.apache.cassandra.locator.HttpSeedProvider;
 import org.apache.cassandra.service.StorageService;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -159,7 +159,7 @@ public class AuthTest extends TestBaseImpl
     {
         IInstanceConfig config = cluster.newInstanceConfig();
         // set both nodes as seed nodes in the list
-        config.set("seed_provider", new IInstanceConfig.ParameterizedClass(SimpleSeedProvider.class.getName(),
+        config.set("seed_provider", new IInstanceConfig.ParameterizedClass(HttpSeedProvider.class.getName(),
                                                                            Collections.singletonMap("seeds", "127.0.0.1, 127.0.0.2")));
         return cluster.bootstrap(config);
     }
