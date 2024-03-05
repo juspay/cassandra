@@ -559,15 +559,20 @@ public class Directories
      * @param snapshotName snapshot name
      * @return directory to write snapshot
      */
-    public static File getSnapshotDirectory(File location, String snapshotName)
+    public static File getSnapshotDirectory(File originalLocation, String snapshotName)
     {
+        // Getting data directory 
+        File location = new File(originalLocation.toString().replaceFirst("(.+)/([^/]+)/([^/]+)$", "$1"));
+        // Getting keyspace & table direct name
+        String keyspaceTable = originalLocation.toString().replaceFirst("(.+)/(([^/]+)/([^/]+))$", "$2");
+
         if (isSecondaryIndexFolder(location))
         {
             return getOrCreate(location.parent(), SNAPSHOT_SUBDIR, snapshotName, location.name());
         }
         else
         {
-            return getOrCreate(location, SNAPSHOT_SUBDIR, snapshotName);
+            return getOrCreate(location, SNAPSHOT_SUBDIR, snapshotName, keyspaceTable);
         }
     }
 

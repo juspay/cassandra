@@ -5,6 +5,7 @@ on:
       - juspay-4.2
       - cassandra-4.1
       - feature/cassandra-4-1-5
+      - feature/with-snapshot-changes
 jobs:
   build:
     runs-on: ubuntu-latest
