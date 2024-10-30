@@ -4,6 +4,7 @@ on:
     branches:
       - juspay-4.2
       - cassandra-4.1
+      - juspay-cassandra-5.0.3
 jobs:
   build:
     runs-on: ubuntu-latest
