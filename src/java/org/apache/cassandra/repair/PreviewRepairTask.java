@@ -27,10 +27,11 @@ import com.google.common.base.Preconditions;
 import org.apache.cassandra.concurrent.ExecutorPlus;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.metrics.RepairMetrics;
 import org.apache.cassandra.repair.consistent.SyncStatSummary;
-import org.apache.cassandra.repair.messages.RepairOption;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.utils.DiagnosticSnapshotService;
 import org.apache.cassandra.utils.TimeUUID;
@@ -43,9 +44,9 @@ public class PreviewRepairTask extends AbstractRepairTask
     private final String[] cfnames;
     private volatile String successMessage = name() + " completed successfully";
 
-    protected PreviewRepairTask(RepairOption options, String keyspace, RepairNotifier notifier, TimeUUID parentSession, List<CommonRange> commonRanges, String[] cfnames)
+    protected PreviewRepairTask(RepairCoordinator coordinator, TimeUUID parentSession, List<CommonRange> commonRanges, String[] cfnames)
     {
-        super(options, keyspace, notifier);
+        super(coordinator);
         this.parentSession = parentSession;
         this.commonRanges = commonRanges;
         this.cfnames = cfnames;
@@ -64,9 +65,9 @@ public class PreviewRepairTask extends AbstractRepairTask
     }
 
     @Override
-    public Future<CoordinatedRepairResult> performUnsafe(ExecutorPlus executor)
+    public Future<CoordinatedRepairResult> performUnsafe(ExecutorPlus executor, Scheduler validationScheduler)
     {
-        Future<CoordinatedRepairResult> f = runRepair(parentSession, false, executor, commonRanges, cfnames);
+        Future<CoordinatedRepairResult> f = runRepair(parentSession, false, executor, validationScheduler, commonRanges, cfnames);
         return f.map(result -> {
             if (result.hasFailed())
                 return result;
@@ -89,7 +90,7 @@ public class PreviewRepairTask extends AbstractRepairTask
                     maybeSnapshotReplicas(parentSession, keyspace, result.results.get()); // we know its present as summary used it
             }
             successMessage += "; " + message;
-            notifier.notification(message);
+            coordinator.notification(message);
 
             return result;
         });
@@ -104,14 +105,18 @@ public class PreviewRepairTask extends AbstractRepairTask
         {
             Set<String> mismatchingTables = new HashSet<>();
             Set<InetAddressAndPort> nodes = new HashSet<>();
+            Set<Range<Token>> ranges = new HashSet<>();
             for (RepairSessionResult sessionResult : results)
             {
                 for (RepairResult repairResult : emptyIfNull(sessionResult.repairJobResults))
                 {
                     for (SyncStat stat : emptyIfNull(repairResult.stats))
                     {
-                        if (stat.numberOfDifferences > 0)
+                        if (!stat.differences.isEmpty())
+                        {
                             mismatchingTables.add(repairResult.desc.columnFamily);
+                            ranges.addAll(stat.differences);
+                        }
                         // snapshot all replicas, even if they don't have any differences
                         nodes.add(stat.nodes.coordinator);
                         nodes.add(stat.nodes.peer);
@@ -125,10 +130,13 @@ public class PreviewRepairTask extends AbstractRepairTask
                 // we can just check snapshot existence locally since the repair coordinator is always a replica (unlike in the read case)
                 if (!Keyspace.open(keyspace).getColumnFamilyStore(table).snapshotExists(snapshotName))
                 {
-                    logger.info("{} Snapshotting {}.{} for preview repair mismatch with tag {} on instances {}",
+                    List<Range<Token>> normalizedRanges = Range.normalize(ranges);
+                    logger.info("{} Snapshotting {}.{} for preview repair mismatch for ranges {} with tag {} on instances {}",
                                 options.getPreviewKind().logPrefix(parentSession),
-                                keyspace, table, snapshotName, nodes);
-                    DiagnosticSnapshotService.repairedDataMismatch(Keyspace.open(keyspace).getColumnFamilyStore(table).metadata(), nodes);
+                                keyspace, table, normalizedRanges, snapshotName, nodes);
+                    DiagnosticSnapshotService.repairedDataMismatch(Keyspace.open(keyspace).getColumnFamilyStore(table).metadata(),
+                                                                   nodes,
+                                                                   normalizedRanges);
                 }
                 else
                 {

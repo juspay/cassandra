@@ -17,33 +17,52 @@
  */
 package org.apache.cassandra.db.compaction;
 
-import java.util.*;
-import java.util.function.LongPredicate;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongPredicate;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
-
+import org.apache.cassandra.db.AbstractCompactionController;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Columns;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.EmptyIterators;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.RegularAndStaticColumns;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.transform.DuplicateRowChecker;
-import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.partitions.PurgeFunction;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterators;
-import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.rows.RangeTombstoneBoundMarker;
+import org.apache.cassandra.db.rows.RangeTombstoneMarker;
+import org.apache.cassandra.db.rows.Row;
+import org.apache.cassandra.db.rows.Rows;
+import org.apache.cassandra.db.rows.Unfiltered;
+import org.apache.cassandra.db.rows.UnfilteredRowIterator;
+import org.apache.cassandra.db.rows.UnfilteredRowIterators;
+import org.apache.cassandra.db.rows.WrappingUnfilteredRowIterator;
 import org.apache.cassandra.db.transform.Transformation;
+import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.index.transactions.CompactionTransaction;
+import org.apache.cassandra.index.transactions.IndexTransaction;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.metrics.TopPartitionTracker;
 import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.schema.SchemaConstants;
+import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.paxos.PaxosRepairHistory;
 import org.apache.cassandra.service.paxos.uncommitted.PaxosRows;
 import org.apache.cassandra.utils.TimeUUID;
@@ -76,14 +95,14 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     private final AbstractCompactionController controller;
     private final List<ISSTableScanner> scanners;
     private final ImmutableSet<SSTableReader> sstables;
-    private final int nowInSec;
+    private final long nowInSec;
     private final TimeUUID compactionId;
     private final long totalBytes;
     private long bytesRead;
     private long totalSourceCQLRows;
 
     // Keep targetDirectory for compactions, needed for `nodetool compactionstats`
-    private String targetDirectory;
+    private volatile String targetDirectory;
 
     /*
      * counters for merged rows.
@@ -95,16 +114,15 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     private final UnfilteredPartitionIterator compacted;
     private final ActiveCompactionsTracker activeCompactions;
 
-    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, AbstractCompactionController controller, int nowInSec, TimeUUID compactionId)
+    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, AbstractCompactionController controller, long nowInSec, TimeUUID compactionId)
     {
         this(type, scanners, controller, nowInSec, compactionId, ActiveCompactionsTracker.NOOP, null);
     }
 
-    @SuppressWarnings("resource") // We make sure to close mergedIterator in close() and CompactionIterator is itself an AutoCloseable
     public CompactionIterator(OperationType type,
                               List<ISSTableScanner> scanners,
                               AbstractCompactionController controller,
-                              int nowInSec,
+                              long nowInSec,
                               TimeUUID compactionId,
                               ActiveCompactionsTracker activeCompactions,
                               TopPartitionTracker.Collector topPartitionCollector)
@@ -187,12 +205,23 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     {
         return new UnfilteredPartitionIterators.MergeListener()
         {
+            private boolean rowProcessingNeeded()
+            {
+                return (type == OperationType.COMPACTION || type == OperationType.MAJOR_COMPACTION)
+                       && controller.cfs.indexManager.handles(IndexTransaction.Type.COMPACTION);
+            }
+
+            @Override
+            public boolean preserveOrder()
+            {
+                return rowProcessingNeeded();
+            }
+
             public UnfilteredRowIterators.MergeListener getRowMergeListener(DecoratedKey partitionKey, List<UnfilteredRowIterator> versions)
             {
                 int merged = 0;
                 for (int i=0, isize=versions.size(); i<isize; i++)
                 {
-                    @SuppressWarnings("resource")
                     UnfilteredRowIterator iter = versions.get(i);
                     if (iter != null)
                         merged++;
@@ -202,17 +231,13 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
 
                 CompactionIterator.this.updateCounterFor(merged);
 
-                if ( (type != OperationType.COMPACTION && type != OperationType.MAJOR_COMPACTION) 
-                    || !controller.cfs.indexManager.hasIndexes() ) 
-                {
+                if (!rowProcessingNeeded())
                     return null;
-                }
                 
                 Columns statics = Columns.NONE;
                 Columns regulars = Columns.NONE;
                 for (int i=0, isize=versions.size(); i<isize; i++)
                 {
-                    @SuppressWarnings("resource")
                     UnfilteredRowIterator iter = versions.get(i);
                     if (iter != null)
                     {
@@ -240,30 +265,23 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
 
                 return new UnfilteredRowIterators.MergeListener()
                 {
-                    public void onMergedPartitionLevelDeletion(DeletionTime mergedDeletion, DeletionTime[] versions)
-                    {
-                    }
+                    @Override
+                    public void onMergedPartitionLevelDeletion(DeletionTime mergedDeletion, DeletionTime[] versions) {}
 
-                    public Row onMergedRows(Row merged, Row[] versions)
+                    @Override
+                    public void onMergedRows(Row merged, Row[] versions)
                     {
                         indexTransaction.start();
                         indexTransaction.onRowMerge(merged, versions);
                         indexTransaction.commit();
-                        return merged;
                     }
 
-                    public void onMergedRangeTombstoneMarkers(RangeTombstoneMarker mergedMarker, RangeTombstoneMarker[] versions)
-                    {
-                    }
+                    @Override
+                    public void onMergedRangeTombstoneMarkers(RangeTombstoneMarker mergedMarker, RangeTombstoneMarker[] versions) {}
 
-                    public void close()
-                    {
-                    }
+                    @Override
+                    public void close() {}
                 };
-            }
-
-            public void close()
-            {
             }
         };
     }
@@ -322,9 +340,9 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
 
         private long compactedUnfiltered;
 
-        private Purger(AbstractCompactionController controller, int nowInSec)
+        private Purger(AbstractCompactionController controller, long nowInSec)
         {
-            super(nowInSec, controller.gcBefore, controller.compactingRepaired() ? Integer.MAX_VALUE : Integer.MIN_VALUE,
+            super(nowInSec, controller.gcBefore, controller.compactingRepaired() ? Long.MAX_VALUE : Integer.MIN_VALUE,
                   controller.cfs.getCompactionStrategyManager().onlyPurgeRepairedTombstones(),
                   controller.cfs.metadata.get().enforceStrictLiveness());
             this.controller = controller;
@@ -385,8 +403,10 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
      * The result produced by this iterator is such that when merged with tombSource it produces the same output
      * as the merge of dataSource and tombSource.
      */
-    private static class GarbageSkippingUnfilteredRowIterator extends WrappingUnfilteredRowIterator
+    private static class GarbageSkippingUnfilteredRowIterator implements WrappingUnfilteredRowIterator
     {
+        private final UnfilteredRowIterator wrapped;
+
         final UnfilteredRowIterator tombSource;
         final DeletionTime partitionLevelDeletion;
         final Row staticRow;
@@ -399,8 +419,8 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
         DeletionTime openDeletionTime = DeletionTime.LIVE;
         DeletionTime partitionDeletionTime;
         DeletionTime activeDeletionTime;
-        Unfiltered tombNext = null;
-        Unfiltered dataNext = null;
+        Unfiltered tombNext;
+        Unfiltered dataNext;
         Unfiltered next = null;
 
         /**
@@ -413,7 +433,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
          */
         protected GarbageSkippingUnfilteredRowIterator(UnfilteredRowIterator dataSource, UnfilteredRowIterator tombSource, boolean cellLevelGC)
         {
-            super(dataSource);
+            this.wrapped = dataSource;
             this.tombSource = tombSource;
             this.cellLevelGC = cellLevelGC;
             metadata = dataSource.metadata();
@@ -433,6 +453,12 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
             dataNext = advance(dataSource);
         }
 
+        @Override
+        public UnfilteredRowIterator wrapped()
+        {
+            return wrapped;
+        }
+
         private static Unfiltered advance(UnfilteredRowIterator source)
         {
             return source.hasNext() ? source.next() : null;
@@ -446,7 +472,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
 
         public void close()
         {
-            super.close();
+            wrapped.close();
             tombSource.close();
         }
 
@@ -497,7 +523,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
                                                                     tombOpenDeletionTime);
                         boolean supersededBefore = openDeletionTime.isLive();
                         boolean supersededAfter = !dataOpenDeletionTime.supersedes(activeDeletionTime);
-                        // If a range open was not issued because it was superseded and the deletion isn't superseded any more, we need to open it now.
+                        // If a range open was not issued because it was superseded and the deletion isn't superseded anymore, we need to open it now.
                         if (supersededBefore && !supersededAfter)
                             next = new RangeTombstoneBoundMarker(((RangeTombstoneMarker) tombNext).closeBound(false).invert(), dataOpenDeletionTime);
                         // If the deletion begins to be superseded, we don't close the range yet. This can save us a close/open pair if it ends after the superseding range.
@@ -610,6 +636,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
 
     private class PaxosPurger extends Transformation<UnfilteredRowIterator>
     {
+
         private final long nowInSec;
         private final long paxosPurgeGraceMicros = DatabaseDescriptor.getPaxosPurgeGrace(MICROSECONDS);
         private final Map<TableId, PaxosRepairHistory.Searcher> tableIdToHistory = new HashMap<>();
@@ -634,7 +661,6 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
         }
 
         @Override
-        @SuppressWarnings("resource")
         protected UnfilteredRowIterator applyToPartition(UnfilteredRowIterator partition)
         {
             currentToken = partition.partitionKey().getToken();
@@ -717,6 +743,6 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
 
     private static boolean isPaxos(ColumnFamilyStore cfs)
     {
-        return cfs.name.equals(SystemKeyspace.PAXOS) && cfs.keyspace.getName().equals(SchemaConstants.SYSTEM_KEYSPACE_NAME);
+        return cfs.name.equals(SystemKeyspace.PAXOS) && cfs.getKeyspaceName().equals(SchemaConstants.SYSTEM_KEYSPACE_NAME);
     }
 }

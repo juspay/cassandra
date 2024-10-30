@@ -18,6 +18,10 @@
 
 package org.apache.cassandra.distributed.impl;
 
+import java.util.Map;
+import javax.annotation.Nullable;
+
+import org.apache.cassandra.net.SocketUtils;
 import org.apache.cassandra.utils.Shared;
 
 import static org.apache.cassandra.utils.Shared.Recursive.INTERFACES;
@@ -25,79 +29,142 @@ import static org.apache.cassandra.utils.Shared.Recursive.INTERFACES;
 @Shared(inner = INTERFACES)
 public interface INodeProvisionStrategy
 {
-    public enum Strategy
+    @FunctionalInterface
+    interface Factory
+    {
+        INodeProvisionStrategy create(int subnet, @Nullable Map<String, Integer> portMap);
+    }
+
+    enum Strategy implements Factory
     {
         OneNetworkInterface
         {
-            INodeProvisionStrategy create(int subnet) {
-                return new INodeProvisionStrategy()
+            @Override
+            public INodeProvisionStrategy create(int subnet, @Nullable Map<String, Integer> portMap)
+            {
+                String ipAdress = "127.0." + subnet + ".1";
+                return new AbstractNodeProvisionStrategy(portMap)
                 {
-                    public String seedIp()
-                    {
-                        return "127.0." + subnet + ".1";
-                    }
 
-                    public int seedPort()
-                    {
-                        return 7012;
-                    }
-
-                    public String ipAddress(int nodeNum)
-                    {
-                        return "127.0." + subnet + ".1";
-                    }
-
-                    public int storagePort(int nodeNum)
+                    @Override
+                    protected int computeStoragePort(int nodeNum)
                     {
                         return 7011 + nodeNum;
                     }
 
-                    public int nativeTransportPort(int nodeNum)
+                    @Override
+                    protected int computeNativeTransportPort(int nodeNum)
                     {
                         return 9041 + nodeNum;
+                    }
+
+                    @Override
+                    protected int computeJmxPort(int nodeNum)
+                    {
+                        return 7199 + nodeNum;
+                    }
+
+                    @Override
+                    public int seedNodeNum()
+                    {
+                        return 1;
+                    }
+
+                    @Override
+                    public String ipAddress(int nodeNum)
+                    {
+                        return ipAdress;
                     }
                 };
             }
         },
         MultipleNetworkInterfaces
         {
-            INodeProvisionStrategy create(int subnet) {
-                String ipPrefix = "127.0." + subnet + ".";
-                return new INodeProvisionStrategy()
+            @Override
+            public INodeProvisionStrategy create(int subnet, @Nullable Map<String, Integer> portMap)
+            {
+                String ipPrefix = "127.0." + subnet + '.';
+                return new AbstractNodeProvisionStrategy(portMap)
                 {
-                    public String seedIp()
+                    @Override
+                    public int seedNodeNum()
                     {
-                        return ipPrefix + "1";
+                        return 1;
                     }
 
-                    public int seedPort()
-                    {
-                        return 7012;
-                    }
-
+                    @Override
                     public String ipAddress(int nodeNum)
                     {
                         return ipPrefix + nodeNum;
                     }
-
-                    public int storagePort(int nodeNum)
-                    {
-                        return 7012;
-                    }
-
-                    public int nativeTransportPort(int nodeNum)
-                    {
-                        return 9042;
-                    }
                 };
             }
         };
-        abstract INodeProvisionStrategy create(int subnet);
     }
 
-    abstract String seedIp();
-    abstract int seedPort();
-    abstract String ipAddress(int nodeNum);
-    abstract int storagePort(int nodeNum);
-    abstract int nativeTransportPort(int nodeNum);
+    int seedNodeNum();
+
+    String ipAddress(int nodeNum);
+
+    int storagePort(int nodeNum);
+
+    int nativeTransportPort(int nodeNum);
+
+    int jmxPort(int nodeNum);
+
+    abstract class AbstractNodeProvisionStrategy implements INodeProvisionStrategy
+    {
+        @Nullable
+        private final Map<String, Integer> portMap;
+
+        protected AbstractNodeProvisionStrategy(@Nullable Map<String, Integer> portMap)
+        {
+            this.portMap = portMap;
+        }
+
+        protected int computeStoragePort(int nodeNum)
+        {
+            return 7012;
+        }
+
+        protected int computeNativeTransportPort(int nodeNum)
+        {
+            return 9042;
+        }
+
+        protected int computeJmxPort(int nodeNum)
+        {
+            return 7199;
+        }
+
+        @Override
+        public int storagePort(int nodeNum)
+        {
+            if (portMap != null)
+            {
+                return portMap.computeIfAbsent("storagePort@node" + nodeNum, key -> SocketUtils.findAvailablePort(ipAddress(nodeNum), computeStoragePort(nodeNum)));
+            }
+            return computeStoragePort(nodeNum);
+        }
+
+        @Override
+        public int nativeTransportPort(int nodeNum)
+        {
+            if (portMap != null)
+            {
+                return portMap.computeIfAbsent("nativeTransportPort@node" + nodeNum, key -> SocketUtils.findAvailablePort(ipAddress(nodeNum), computeNativeTransportPort(nodeNum)));
+            }
+            return computeNativeTransportPort(nodeNum);
+        }
+
+        @Override
+        public int jmxPort(int nodeNum)
+        {
+            if (portMap != null)
+            {
+                return portMap.computeIfAbsent("jmxPort@node" + nodeNum, key -> SocketUtils.findAvailablePort(ipAddress(nodeNum), computeJmxPort(nodeNum)));
+            }
+            return computeJmxPort(nodeNum);
+        }
+    }
 }

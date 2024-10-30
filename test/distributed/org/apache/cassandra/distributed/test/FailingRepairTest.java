@@ -64,9 +64,9 @@ import org.apache.cassandra.distributed.api.IIsolatedExecutor.SerializableRunnab
 import org.apache.cassandra.distributed.impl.InstanceKiller;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.io.sstable.SSTableReadsListener;
 import org.apache.cassandra.io.sstable.format.ForwardingSSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
 import org.apache.cassandra.io.util.ChannelProxy;
 import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.repair.RepairParallelism;
@@ -75,6 +75,8 @@ import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.ActiveRepairService.ParentRepairStatus;
 import org.apache.cassandra.service.StorageService;
 import org.awaitility.Awaitility;
+
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
 
 @RunWith(Parameterized.class)
 public class FailingRepairTest extends TestBaseImpl implements Serializable
@@ -132,7 +134,7 @@ public class FailingRepairTest extends TestBaseImpl implements Serializable
 
     private static String getCfName(Verb type, RepairParallelism parallelism, boolean withTracing)
     {
-        return type.name().toLowerCase() + "_" + parallelism.name().toLowerCase() + "_" + withTracing;
+        return toLowerCaseLocalized(type.name()) + "_" + toLowerCaseLocalized(parallelism.name()) + "_" + withTracing;
     }
 
     @BeforeClass

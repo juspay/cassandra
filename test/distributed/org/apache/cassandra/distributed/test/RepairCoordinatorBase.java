@@ -34,6 +34,9 @@ import org.apache.cassandra.distributed.api.NodeToolResult;
 import org.apache.cassandra.distributed.test.DistributedRepairUtils.RepairParallelism;
 import org.apache.cassandra.distributed.test.DistributedRepairUtils.RepairType;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.NODETOOL_JMX_NOTIFICATION_POLL_INTERVAL_SECONDS;
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
+
 public class RepairCoordinatorBase extends TestBaseImpl
 {
     protected static Cluster CLUSTER;
@@ -67,7 +70,7 @@ public class RepairCoordinatorBase extends TestBaseImpl
         // This only works because the way CI works
         // In CI a new JVM is spun up for each test file, so this doesn't have to worry about another test file
         // getting this set first
-        System.setProperty("cassandra.nodetool.jmx_notification_poll_interval_seconds", "1");
+        NODETOOL_JMX_NOTIFICATION_POLL_INTERVAL_SECONDS.setLong(1);
     }
 
     @BeforeClass
@@ -96,7 +99,7 @@ public class RepairCoordinatorBase extends TestBaseImpl
 
     protected String postfix()
     {
-        return repairType.name().toLowerCase() + "_" + parallelism.name().toLowerCase() + "_" + withNotifications;
+        return toLowerCaseLocalized(repairType.name()) + "_" + toLowerCaseLocalized(parallelism.name()) + "_" + withNotifications;
     }
 
     protected NodeToolResult repair(int node, String... args) {

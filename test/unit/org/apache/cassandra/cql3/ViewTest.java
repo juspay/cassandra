@@ -19,6 +19,7 @@
 package org.apache.cassandra.cql3;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 
@@ -36,6 +37,7 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.view.View;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.SyntaxException;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.SchemaKeyspaceTables;
 import org.apache.cassandra.service.ClientWarn;
@@ -232,12 +234,12 @@ public class ViewTest extends ViewAbstractTest
 
         createView("CREATE MATERIALIZED VIEW %s AS SELECT * FROM %s WHERE k IS NOT NULL AND intval IS NOT NULL PRIMARY KEY (intval, k)");
 
-        updateView("INSERT INTO %s (k, intval, listval) VALUES (?, ?, fromJson(?))", 0, 0, "[1, 2, 3]");
+        updateView("INSERT INTO %s (k, intval, listval) VALUES (?, ?, from_json(?))", 0, 0, "[1, 2, 3]");
         assertRows(execute("SELECT k, listval FROM %s WHERE k = ?", 0), row(0, list(1, 2, 3)));
         assertRows(executeView("SELECT k, listval from %s WHERE intval = ?", 0), row(0, list(1, 2, 3)));
 
         updateView("INSERT INTO %s (k, intval) VALUES (?, ?)", 1, 1);
-        updateView("INSERT INTO %s (k, listval) VALUES (?, fromJson(?))", 1, "[1, 2, 3]");
+        updateView("INSERT INTO %s (k, listval) VALUES (?, from_json(?))", 1, "[1, 2, 3]");
         assertRows(execute("SELECT k, listval FROM %s WHERE k = ?", 1), row(1, list(1, 2, 3)));
         assertRows(executeView("SELECT k, listval from %s WHERE intval = ?", 1), row(1, list(1, 2, 3)));
     }
@@ -249,7 +251,7 @@ public class ViewTest extends ViewAbstractTest
 
         createView("CREATE MATERIALIZED VIEW %s AS SELECT * FROM %s WHERE k IS NOT NULL AND listval IS NOT NULL PRIMARY KEY (k, listval)");
 
-        updateView("INSERT INTO %s (k, intval, listval) VALUES (?, ?, fromJson(?))",
+        updateView("INSERT INTO %s (k, intval, listval) VALUES (?, ?, from_json(?))",
                    0,
                    0,
                    "[[\"a\",\"1\"], [\"b\",\"2\"], [\"c\",\"3\"]]");
@@ -261,7 +263,7 @@ public class ViewTest extends ViewAbstractTest
                    row(0, list(tuple("a", "1"), tuple("b", "2"), tuple("c", "3"))));
 
         // update listval with the same value and it will be compared in view generator
-        updateView("INSERT INTO %s (k, listval) VALUES (?, fromJson(?))",
+        updateView("INSERT INTO %s (k, listval) VALUES (?, from_json(?))",
                    0,
                    "[[\"a\",\"1\"], [\"b\",\"2\"], [\"c\",\"3\"]]");
         // verify result
@@ -325,7 +327,9 @@ public class ViewTest extends ViewAbstractTest
 
         ColumnFamilyStore cfs = Keyspace.open(keyspace()).getColumnFamilyStore(currentView());
         Util.flush(cfs);
-        Assert.assertEquals(1, cfs.getLiveSSTables().size());
+        Set<SSTableReader> tables = cfs.getLiveSSTables();
+        // cf may have flushed due to the commit log being dirty, plus our explicit flush above
+        Assert.assertTrue(String.format("Expected one or two sstables, got %s", tables), tables.size() > 0 && tables.size() <= 2);
     }
 
     @Test
@@ -420,7 +424,7 @@ public class ViewTest extends ViewAbstractTest
         assertRowsNet(executeViewNet("SELECT * FROM %s"), row(1, 0));
     }
 
-    private void testViewBuilderResume(int concurrentViewBuilders) throws Throwable
+    private void testViewBuilderResumeHelper(int concurrentViewBuilders) throws Throwable
     {
         createTable("CREATE TABLE %s (" +
                     "k int, " +
@@ -477,7 +481,7 @@ public class ViewTest extends ViewAbstractTest
     {
         for (int i = 1; i <= 8; i *= 2)
         {
-            testViewBuilderResume(i);
+            testViewBuilderResumeHelper(i);
         }
     }
 

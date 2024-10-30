@@ -27,6 +27,8 @@ import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.cql3.conditions.ColumnCondition;
 import org.apache.cassandra.cql3.conditions.Conditions;
 import org.apache.cassandra.cql3.restrictions.StatementRestrictions;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.terms.Term;
 import org.apache.cassandra.db.Clustering;
 import org.apache.cassandra.db.Slice;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
@@ -166,7 +168,7 @@ public class UpdateStatement extends ModificationStatement
 
                 if (def.isPrimaryKeyColumn())
                 {
-                    whereClause.add(new SingleColumnRelation(columnNames.get(i), Operator.EQ, value));
+                    whereClause.add(Relation.singleColumn(columnNames.get(i), Operator.EQ, value));
                 }
                 else
                 {
@@ -183,6 +185,7 @@ public class UpdateStatement extends ModificationStatement
                                                                            metadata,
                                                                            whereClause.build(),
                                                                            bindVariables,
+                                                                           Collections.emptyList(),
                                                                            applyOnlyToStaticColumns,
                                                                            false,
                                                                            false);
@@ -236,7 +239,7 @@ public class UpdateStatement extends ModificationStatement
                 Term.Raw raw = prepared.getRawTermForColumn(def, defaultUnset);
                 if (def.isPrimaryKeyColumn())
                 {
-                    whereClause.add(new SingleColumnRelation(def.name, Operator.EQ, raw));
+                    whereClause.add(Relation.singleColumn(def.name, Operator.EQ, raw));
                 }
                 else
                 {
@@ -253,6 +256,7 @@ public class UpdateStatement extends ModificationStatement
                                                                            metadata,
                                                                            whereClause.build(),
                                                                            bindVariables,
+                                                                           Collections.emptyList(),
                                                                            applyOnlyToStaticColumns,
                                                                            false,
                                                                            false);
@@ -287,7 +291,7 @@ public class UpdateStatement extends ModificationStatement
                             Attributes.Raw attrs,
                             List<Pair<ColumnIdentifier, Operation.RawUpdate>> updates,
                             WhereClause whereClause,
-                            List<Pair<ColumnIdentifier, ColumnCondition.Raw>> conditions,
+                            List<ColumnCondition.Raw> conditions,
                             boolean ifExists)
         {
             super(name, StatementType.UPDATE, attrs, conditions, false, ifExists);
@@ -320,7 +324,8 @@ public class UpdateStatement extends ModificationStatement
                                                                  bindVariables,
                                                                  operations,
                                                                  whereClause,
-                                                                 conditions);
+                                                                 conditions,
+                                                                 Collections.emptyList());
 
             return new UpdateStatement(type,
                                        bindVariables,

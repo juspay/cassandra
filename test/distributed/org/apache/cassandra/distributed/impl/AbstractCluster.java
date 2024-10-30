@@ -29,7 +29,6 @@ import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,18 +50,16 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
 import org.junit.Assume;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CassandraRelevantProperties;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.distributed.Constants;
@@ -124,7 +121,7 @@ import static org.apache.cassandra.utils.concurrent.Condition.newOneTimeConditio
  * All actions (reading, writing, schema changes, etc) are executed by serializing lambda/runnables,
  * transferring them to instance-specific classloaders, deserializing and running them there. Most of
  * the things can be simply captured in closure or passed through `apply` method of the wrapped serializable
- * function/callable. You can use {@link Instance#{applies|runs|consumes}OnInstance} for executing
+ * function/callable. You can use {@code Instance#{applies|runs|consumes}OnInstance} for executing
  * code on specific instance.
  *
  * Each instance has its own logger. Each instance log line will contain INSTANCE{instance_id}.
@@ -155,6 +152,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     private final Map<Integer, NetworkTopology.DcAndRack> nodeIdTopology;
     private final Consumer<IInstanceConfig> configUpdater;
     private final int broadcastPort;
+    private final Map<String, Integer> portMap;
 
     // mutated by starting/stopping a node
     private final List<I> instances;
@@ -164,7 +162,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
 
     // mutated by user-facing API
     private final MessageFilters filters;
-    private final INodeProvisionStrategy.Strategy nodeProvisionStrategy;
+    private final INodeProvisionStrategy.Factory nodeProvisionStrategy;
     private final IInstanceInitializer instanceInitializer;
     private final int datadirCount;
     private volatile Thread.UncaughtExceptionHandler previousHandler = null;
@@ -182,13 +180,17 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     public static abstract class AbstractBuilder<I extends IInstance, C extends ICluster, B extends AbstractBuilder<I, C, B>>
         extends org.apache.cassandra.distributed.shared.AbstractBuilder<I, C, B>
     {
-        private INodeProvisionStrategy.Strategy nodeProvisionStrategy = INodeProvisionStrategy.Strategy.MultipleNetworkInterfaces;
+        private INodeProvisionStrategy.Factory nodeProvisionStrategy = INodeProvisionStrategy.Strategy.MultipleNetworkInterfaces;
         private ShutdownExecutor shutdownExecutor = DEFAULT_SHUTDOWN_EXECUTOR;
+        private boolean dynamicPortAllocation = false;
 
         {
+            // Indicate that we are running in the in-jvm dtest environment
+            CassandraRelevantProperties.DTEST_IS_IN_JVM_DTEST.setBoolean(true);
             // those properties may be set for unit-test optimizations; those should not be used when running dtests
-            CassandraRelevantProperties.FLUSH_LOCAL_SCHEMA_CHANGES.reset();
+            CassandraRelevantProperties.TEST_FLUSH_LOCAL_SCHEMA_CHANGES.reset();
             CassandraRelevantProperties.NON_GRACEFUL_SHUTDOWN.reset();
+            CassandraRelevantProperties.IO_NETTY_TRANSPORT_NONATIVE.setBoolean(false);
         }
 
         public AbstractBuilder(Factory<I, C, B> factory)
@@ -197,16 +199,38 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
             withSharedClasses(SHARED_PREDICATE);
         }
 
-        public B withNodeProvisionStrategy(INodeProvisionStrategy.Strategy nodeProvisionStrategy)
+        @SuppressWarnings("unchecked")
+        private B self()
+        {
+            return (B) this;
+        }
+
+        public B withNodeProvisionStrategy(INodeProvisionStrategy.Factory nodeProvisionStrategy)
         {
             this.nodeProvisionStrategy = nodeProvisionStrategy;
-            return (B) this;
+            return self();
         }
 
         public B withShutdownExecutor(ShutdownExecutor shutdownExecutor)
         {
             this.shutdownExecutor = shutdownExecutor;
-            return (B) this;
+            return self();
+        }
+
+        /**
+         * When {@code dynamicPortAllocation} is {@code true}, it will ask {@link INodeProvisionStrategy} to provision
+         * available storage, native and JMX ports in the given interface. When {@code dynamicPortAllocation} is
+         * {@code false} (the default behavior), it will use statically allocated ports based on the number of
+         * interfaces available and the node number.
+         *
+         * @param dynamicPortAllocation {@code true} for dynamic port allocation, {@code false} for static port
+         *                              allocation
+         * @return a reference to this Builder
+         */
+        public B withDynamicPortAllocation(boolean dynamicPortAllocation)
+        {
+            this.dynamicPortAllocation = dynamicPortAllocation;
+            return self();
         }
 
         @Override
@@ -255,7 +279,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
         protected IInvokableInstance delegate()
         {
             if (delegate == null)
-                throw new IllegalStateException("Can't use shutdown instances, delegate is null");
+                throw new IllegalStateException("Can't use shutdown node" + config.num() + ", delegate is null");
             return delegate;
         }
 
@@ -536,6 +560,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
         this.filters = new MessageFilters();
         this.instanceInitializer = builder.getInstanceInitializer2();
         this.datadirCount = builder.getDatadirCount();
+        this.portMap = builder.dynamicPortAllocation ? new ConcurrentHashMap<>() : null;
 
         for (int i = 0; i < builder.getNodeCount(); ++i)
         {
@@ -559,7 +584,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     @VisibleForTesting
     InstanceConfig createInstanceConfig(int nodeNum)
     {
-        INodeProvisionStrategy provisionStrategy = nodeProvisionStrategy.create(subnet);
+        INodeProvisionStrategy provisionStrategy = nodeProvisionStrategy.create(subnet, portMap);
         Collection<String> tokens = tokenSupplier.tokens(nodeNum);
         NetworkTopology topology = buildNetworkTopology(provisionStrategy, nodeIdTopology);
         InstanceConfig config = InstanceConfig.generate(nodeNum, provisionStrategy, topology, root, tokens, datadirCount);
@@ -623,7 +648,12 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
 
     public I bootstrap(IInstanceConfig config)
     {
-        I instance = newInstanceWrapperInternal(initialVersion, config);
+        return bootstrap(config, initialVersion);
+    }
+
+    public I bootstrap(IInstanceConfig config, Versions.Version version)
+    {
+        I instance = newInstanceWrapperInternal(version, config);
         instances.add(instance);
         I prev = instanceMap.put(config.broadcastAddress(), instance);
 
@@ -648,6 +678,16 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     public Stream<ICoordinator> coordinators()
     {
         return stream().map(IInstance::coordinator);
+    }
+
+    public List<I> get(int... nodes)
+    {
+        if (nodes == null || nodes.length == 0)
+            throw new IllegalArgumentException("No nodes provided");
+        List<I> list = new ArrayList<>(nodes.length);
+        for (int i : nodes)
+            list.add(get(i));
+        return list;
     }
 
     /**
@@ -768,7 +808,12 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     public void deliverMessage(InetSocketAddress to, IMessage message)
     {
         IMessageSink sink = messageSink;
-        if (sink == null) get(to).receiveMessage(message);
+        if (sink == null)
+        {
+            I i = get(to);
+            if (i != null)
+                i.receiveMessage(message);
+        }
         else sink.accept(to, message);
     }
 
@@ -782,10 +827,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
 
     public void disableAutoCompaction(String keyspace)
     {
-        forEach(() -> {
-            for (ColumnFamilyStore cs : Keyspace.open(keyspace).getColumnFamilyStores())
-                cs.disableAutoCompaction();
-        });
+        forEach((i) -> i.nodetool("disableautocompaction", keyspace));
     }
 
     public void schemaChange(String query)
@@ -812,8 +854,13 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
 
     public void schemaChange(String query, boolean ignoreStoppedInstances, I instance)
     {
+        schemaChange(query, ignoreStoppedInstances, instance, SchemaChangeMonitor.DEFAULT_WAIT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    public void schemaChange(String query, boolean ignoreStoppedInstances, I instance, int waitSchemaAgreementAmount, TimeUnit unit)
+    {
         instance.sync(() -> {
-            try (SchemaChangeMonitor monitor = new SchemaChangeMonitor())
+            try (SchemaChangeMonitor monitor = new SchemaChangeMonitor(waitSchemaAgreementAmount, unit))
             {
                 if (ignoreStoppedInstances)
                     monitor.ignoreStoppedInstances();
@@ -891,7 +938,8 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
             signal();
             try
             {
-                if (!completed.await(timeOut, timeoutUnit))
+                // Looks like very seldom we may start listening on `completed` after we have already signalled.
+                if (!completed.await(timeOut, timeoutUnit) && !isCompleted())
                     throw new IllegalStateException(getMonitorTimeoutMessage());
             }
             catch (InterruptedException e)
@@ -925,9 +973,17 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
      */
     public class SchemaChangeMonitor extends ChangeMonitor
     {
+        // See CASSANDRA-18707
+        static final public int DEFAULT_WAIT_SECONDS = 120;
+
         public SchemaChangeMonitor()
         {
-            super(70, TimeUnit.SECONDS);
+            super(DEFAULT_WAIT_SECONDS, TimeUnit.SECONDS);
+        }
+
+        public SchemaChangeMonitor(int waitAmount, TimeUnit unit)
+        {
+            super(waitAmount, unit);
         }
 
         protected IListen.Cancel startPolling(IInstance instance)
@@ -981,26 +1037,31 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
             // Start any instances with auto_bootstrap enabled first, and in series to avoid issues
             // with multiple nodes bootstrapping with consistent range movement enabled,
             // and then start any instances with it disabled in parallel.
+            // Whichever instance starts first will be the initial CMS for the cluster.
             List<I> startSequentially = new ArrayList<>();
             List<I> startParallel = new ArrayList<>();
             for (int i = 0; i < instances.size(); i++)
             {
                 I instance = instances.get(i);
 
-                if (i == 0 || (boolean) instance.config().get("auto_bootstrap"))
+                if ((boolean) instance.config().get("auto_bootstrap"))
                     startSequentially.add(instance);
                 else
                     startParallel.add(instance);
             }
 
+            // If no instances have auto_bootstrap enabled, start the first in the list
+            // so it can become the initial CMS member.
+            if (startSequentially.isEmpty())
+                startSequentially.add(startParallel.remove(0));
+
             forEach(startSequentially, i -> {
                 i.startup(this);
-                i.postStartup();
             });
             parallelForEach(startParallel, i -> {
                 i.startup(this);
-                i.postStartup();
             }, 0, null);
+            parallelForEach(instances, IInstance::postStartup, 0, null);
             monitor.waitForCompletion();
         }
     }
@@ -1033,18 +1094,39 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     @Override
     public void close()
     {
-        FBUtilities.waitOnFutures(instances.stream()
-                                           .filter(i -> !i.isShutdown())
-                                           .map(IInstance::shutdown)
-                                           .collect(Collectors.toList()),
-                                  1L, TimeUnit.MINUTES);
+        // Make sure that a nodetool call is not preventing us from stopping the instance
+        System.setSecurityManager(null);
 
+        logger.info("Closing cluster {}", this.clusterId);
+        FBUtilities.closeQuietly(instanceInitializer);
+
+        List<Future<?>> futures = new ArrayList<>();
+        futures = instances.stream()
+                           .filter(i -> !i.isShutdown())
+                           .map(IInstance::shutdown)
+                           .collect(Collectors.toList());
+        try
+        {
+            FBUtilities.waitOnFutures(futures, 1L, TimeUnit.MINUTES);
+        }
+        catch (Throwable t)
+        {
+            IllegalStateException leak = checkForThreadLeaks();
+            if (leak != null)
+            {
+                leak.initCause(t);
+                throw leak;
+            }
+            throw t;
+        }
         instances.clear();
         instanceMap.clear();
         PathUtils.setDeletionListener(ignore -> {});
         // Make sure to only delete directory when threads are stopped
-        if (Files.exists(root))
+        if (Files.exists(root) && futures.stream().allMatch(f -> f.isDone()))
             PathUtils.deleteRecursive(root);
+        else
+            logger.error("Not removing directories, as some instances haven't fully stopped.");
         Thread.setDefaultUncaughtExceptionHandler(previousHandler);
         previousHandler = null;
         checkAndResetUncaughtExceptions();
@@ -1061,36 +1143,33 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
             return true;
         });
         if (!drain.isEmpty())
-            throw new ShutdownException(drain);
+        {
+            ShutdownException shutdownException = new ShutdownException(drain);
+            // also log as java will truncate log lists
+            logger.error("Unexpected errors", shutdownException);
+            throw shutdownException;
+        }
     }
 
-    private void checkForThreadLeaks()
+    @Nullable
+    private IllegalStateException checkForThreadLeaks()
     {
         //This is an alternate version of the thread leak check that just checks to see if any threads are still alive
         // with the context classloader.
-        Set<Thread> threadSet = Thread.getAllStackTraces().keySet();
-        threadSet.stream().filter(t->t.getContextClassLoader() instanceof InstanceClassLoader).forEach(t->{
-            t.setContextClassLoader(null);
-            throw new RuntimeException("Unterminated thread detected " + t.getName() + " in group " + t.getThreadGroup().getName());
-        });
-    }
-
-    // We do not want this check to run every time until we fix problems with tread stops
-    private void withThreadLeakCheck(List<Future<?>> futures)
-    {
-        FBUtilities.waitOnFutures(futures);
-
-        Set<Thread> threadSet = Thread.getAllStackTraces().keySet();
-        threadSet = Sets.difference(threadSet, Collections.singletonMap(Thread.currentThread(), null).keySet());
-        if (!threadSet.isEmpty())
+        Map<Thread, StackTraceElement[]> allThreads = Thread.getAllStackTraces();
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<Thread, StackTraceElement[]> e : allThreads.entrySet())
         {
-            for (Thread thread : threadSet)
-            {
-                System.out.println(thread);
-                System.out.println(Arrays.toString(thread.getStackTrace()));
-            }
-            throw new RuntimeException(String.format("Not all threads have shut down. %d threads are still running: %s", threadSet.size(), threadSet));
+
+            if (!(e.getKey().getContextClassLoader() instanceof InstanceClassLoader)) continue;
+            e.getKey().setContextClassLoader(null);
+            sb.append(e.getKey().getName()).append(":\n");
+            for (StackTraceElement s : e.getValue())
+                sb.append("\t").append(s).append("\n");
         }
+        return sb.length() > 0
+               ? new IllegalStateException("Unterminated threads detected; active threads:\n" + sb)
+               : null;
     }
 
     public List<Token> tokens()
@@ -1145,8 +1224,8 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
                 return false;
 
             return shared.contains(s) ||
-                   InstanceClassLoader.getDefaultLoadSharedFilter().test(s) ||
-                   s.startsWith("org.jboss.byteman");
+                   InstanceClassLoader.getDefaultLoadSharedFilter().test(s)
+                    || s.startsWith("org.jboss.byteman.");
         };
     }
 
@@ -1154,11 +1233,11 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster<I
     {
         Reflections reflections = new Reflections(ConfigurationBuilder.build("org.apache.cassandra").setExpandSuperTypes(false));
         return Utils.INSTANCE.forNames(reflections.get(Scanners.TypesAnnotated.get(annotation.getName())),
-                        reflections.getConfiguration().getClassLoaders())
-               .stream()
-               .filter(testAnnotation(annotation, testAnnotation))
-               .flatMap(expander())
-               .collect(Collectors.toSet());
+                                       reflections.getConfiguration().getClassLoaders())
+                             .stream()
+                             .filter(testAnnotation(annotation, testAnnotation))
+                             .flatMap(expander())
+                             .collect(Collectors.toSet());
     }
 
     private static Set<String> toNames(Set<Class<?>> classes)

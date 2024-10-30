@@ -107,14 +107,16 @@ public interface Future<V> extends io.netty.util.concurrent.Future<V>, Listenabl
         return this;
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16924 */
+    @Deprecated(since = "4.1")
     @Override
     default boolean await(long l) throws InterruptedException
     {
         return await(l, MILLISECONDS);
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16924 */
+    @Deprecated(since = "4.1")
     @Override
     default boolean awaitUninterruptibly(long l)
     {
@@ -176,6 +178,16 @@ public interface Future<V> extends io.netty.util.concurrent.Future<V>, Listenabl
      * Support {@link com.google.common.util.concurrent.Futures#transformAsync(ListenableFuture, AsyncFunction, Executor)} natively
      */
     <T> Future<T> flatMap(Function<? super V, ? extends Future<T>> flatMapper, Executor executor);
+
+    /**
+     * Support {@link com.google.common.util.concurrent.Futures#transformAsync(ListenableFuture, AsyncFunction, Executor)} natively
+     */
+    <T> Future<T> andThenAsync(Function<? super V, ? extends Future<T>> andThen);
+
+    /**
+     * Support {@link com.google.common.util.concurrent.Futures#transformAsync(ListenableFuture, AsyncFunction, Executor)} natively
+     */
+    <T> Future<T> andThenAsync(Function<? super V, ? extends Future<T>> andThen, Executor executor);
 
     /**
      * Invoke {@code runnable} on completion, using {@code executor}.

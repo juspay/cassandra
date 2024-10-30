@@ -52,6 +52,7 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.metrics.TopPartitionTracker;
+import org.apache.cassandra.repair.SharedContext;
 import org.apache.cassandra.repair.ValidationPartitionIterator;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.ActiveRepairService;
@@ -73,7 +74,7 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
      */
     private static class ValidationCompactionController extends CompactionController
     {
-        public ValidationCompactionController(ColumnFamilyStore cfs, int gcBefore)
+        public ValidationCompactionController(ColumnFamilyStore cfs, long gcBefore)
         {
             super(cfs, gcBefore);
         }
@@ -96,7 +97,7 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
         }
     }
 
-    public static int getDefaultGcBefore(ColumnFamilyStore cfs, int nowInSec)
+    public static long getDefaultGcBefore(ColumnFamilyStore cfs, long nowInSec)
     {
         // 2ndary indexes have ExpiringColumns too, so we need to purge tombstones deleted before now. We do not need to
         // add any GcGrace however since 2ndary indexes are local to a node.
@@ -105,18 +106,18 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
 
     private static class ValidationCompactionIterator extends CompactionIterator
     {
-        public ValidationCompactionIterator(List<ISSTableScanner> scanners, ValidationCompactionController controller, int nowInSec, ActiveCompactionsTracker activeCompactions, TopPartitionTracker.Collector topPartitionCollector)
+        public ValidationCompactionIterator(List<ISSTableScanner> scanners, ValidationCompactionController controller, long nowInSec, ActiveCompactionsTracker activeCompactions, TopPartitionTracker.Collector topPartitionCollector)
         {
             super(OperationType.VALIDATION, scanners, controller, nowInSec, nextTimeUUID(), activeCompactions, topPartitionCollector);
         }
     }
 
     @VisibleForTesting
-    public static synchronized Refs<SSTableReader> getSSTablesToValidate(ColumnFamilyStore cfs, Collection<Range<Token>> ranges, TimeUUID parentId, boolean isIncremental) throws NoSuchRepairSessionException
+    public static synchronized Refs<SSTableReader> getSSTablesToValidate(ColumnFamilyStore cfs, SharedContext ctx, Collection<Range<Token>> ranges, TimeUUID parentId, boolean isIncremental) throws NoSuchRepairSessionException
     {
         Refs<SSTableReader> sstables;
 
-        ActiveRepairService.ParentRepairSession prs = ActiveRepairService.instance.getParentRepairSession(parentId);
+        ActiveRepairService.ParentRepairSession prs = ctx.repair().getParentRepairSession(parentId);
 
         Set<SSTableReader> sstablesToValidate = new HashSet<>();
 
@@ -140,7 +141,7 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
         {
             for (SSTableReader sstable : sstableCandidates.sstables)
             {
-                if (new Bounds<>(sstable.first.getToken(), sstable.last.getToken()).intersects(ranges) && predicate.apply(sstable))
+                if (new Bounds<>(sstable.getFirst().getToken(), sstable.getLast().getToken()).intersects(ranges) && predicate.apply(sstable))
                 {
                     sstablesToValidate.add(sstable);
                 }
@@ -158,6 +159,7 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
     }
 
     private final ColumnFamilyStore cfs;
+    private final SharedContext ctx;
     private final Refs<SSTableReader> sstables;
     private final String snapshotName;
     private final boolean isGlobalSnapshotValidation;
@@ -172,9 +174,10 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
     private final long estimatedPartitions;
     private final Map<Range<Token>, Long> rangePartitionCounts;
 
-    public CassandraValidationIterator(ColumnFamilyStore cfs, Collection<Range<Token>> ranges, TimeUUID parentId, TimeUUID sessionID, boolean isIncremental, int nowInSec, TopPartitionTracker.Collector topPartitionCollector) throws IOException, NoSuchRepairSessionException
+    public CassandraValidationIterator(ColumnFamilyStore cfs, SharedContext ctx, Collection<Range<Token>> ranges, TimeUUID parentId, TimeUUID sessionID, boolean isIncremental, long nowInSec, TopPartitionTracker.Collector topPartitionCollector) throws IOException, NoSuchRepairSessionException
     {
         this.cfs = cfs;
+        this.ctx = ctx;
 
         isGlobalSnapshotValidation = cfs.snapshotExists(parentId.toString());
         if (isGlobalSnapshotValidation)
@@ -198,7 +201,7 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
                 cfs.forceBlockingFlush(ColumnFamilyStore.FlushReason.VALIDATION);
                 // Note: we also flush for incremental repair during the anti-compaction process.
             }
-            sstables = getSSTablesToValidate(cfs, ranges, parentId, isIncremental);
+            sstables = getSSTablesToValidate(cfs, ctx, ranges, parentId, isIncremental);
         }
 
         // Persistent memtables will not flush or snapshot to sstables, make an sstable with their data.
@@ -208,12 +211,12 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
 
         Preconditions.checkArgument(sstables != null);
 
-        ActiveRepairService.ParentRepairSession prs = ActiveRepairService.instance.getParentRepairSession(parentId);
+        ActiveRepairService.ParentRepairSession prs = ctx.repair().getParentRepairSession(parentId);
         logger.info("{}, parentSessionId={}: Performing validation compaction on {} sstables in {}.{}",
                     prs.previewKind.logPrefix(sessionID),
                     parentId,
                     sstables.size(),
-                    cfs.keyspace.getName(),
+                    cfs.getKeyspaceName(),
                     cfs.getTableName());
 
         controller = new ValidationCompactionController(cfs, getDefaultGcBefore(cfs, nowInSec));

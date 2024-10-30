@@ -34,6 +34,7 @@ import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
 
+import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.concurrent.AsyncPromise;
 import org.apache.cassandra.utils.concurrent.CountDownLatch;
 import org.slf4j.Logger;
@@ -61,6 +62,7 @@ import org.apache.cassandra.utils.concurrent.UncheckedInterruptedException;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static org.apache.cassandra.net.InternodeConnectionUtils.isSSLError;
 import static org.apache.cassandra.net.MessagingService.current_version;
 import static org.apache.cassandra.net.OutboundConnectionInitiator.*;
@@ -474,7 +476,13 @@ public class OutboundConnection
      */
     private boolean onExpired(Message<?> message)
     {
-        noSpamLogger.warn("{} dropping message of type {} whose timeout expired before reaching the network", id(), message.verb());
+        if (logger.isTraceEnabled())
+            logger.trace("{} dropping message of type {} with payload {} whose timeout ({}ms) expired before reaching the network. {}ms elapsed after expiration. {}ms since creation.",
+                         id(), message.verb(), message.payload, DatabaseDescriptor.getRpcTimeout(MILLISECONDS),
+                         NANOSECONDS.toMillis(Clock.Global.nanoTime() - message.expiresAtNanos()),
+                         message.elapsedSinceCreated(MILLISECONDS));
+        else
+            noSpamLogger.warn("{} dropping message of type {} whose timeout expired before reaching the network", id(), message.verb());
         releaseCapacity(1, canonicalSize(message));
         expiredCount += 1;
         expiredBytes += canonicalSize(message);
@@ -754,7 +762,6 @@ public class OutboundConnection
          *
          * If there is more work to be done, we submit ourselves for execution once the eventLoop has time.
          */
-        @SuppressWarnings("resource")
         boolean doRun(Established established)
         {
             if (!isWritable)
@@ -965,7 +972,6 @@ public class OutboundConnection
             }
         }
 
-        @SuppressWarnings({ "resource", "RedundantSuppression" }) // make eclipse warnings go away
         boolean doRun(Established established)
         {
             Message<?> send = queue.tryPoll(approxTime.now(), this::execute);
@@ -1127,7 +1133,7 @@ public class OutboundConnection
 
                         FrameEncoder.PayloadAllocator payloadAllocator = success.allocator;
                         Channel channel = success.channel;
-                        Established established = new Established(messagingVersion, channel, payloadAllocator, settings);
+                        Established established = new Established(success.messagingVersion, channel, payloadAllocator, settings);
                         state = established;
                         channel.pipeline().addLast("handleExceptionalStates", new ChannelInboundHandlerAdapter() {
                             @Override
@@ -1215,9 +1221,6 @@ public class OutboundConnection
                 if (messagingVersion > settings.acceptVersions.max)
                     messagingVersion = settings.acceptVersions.max;
 
-                // ensure we connect to the correct SSL port
-                settings = settings.withLegacyPortIfNecessary(messagingVersion);
-
                 // In mixed mode operation, some nodes might be configured to use SSL for internode connections and
                 // others might be configured to not use SSL. When a node is configured in optional SSL mode, It should
                 // be able to handle SSL and Non-SSL internode connections. We take care of this when accepting NON-SSL
@@ -1231,7 +1234,7 @@ public class OutboundConnection
                 {
                     logger.info("ConnectionId {} is falling back to {} reconnect strategy for retry", id(), fallBackSslFallbackConnectionTypes[index]);
                 }
-                initiateMessaging(eventLoop, type, fallBackSslFallbackConnectionTypes[index], settings, messagingVersion, result)
+                initiateMessaging(eventLoop, type, fallBackSslFallbackConnectionTypes[index], settings, result)
                 .addListener(future -> {
                     if (future.isCancelled())
                         return;

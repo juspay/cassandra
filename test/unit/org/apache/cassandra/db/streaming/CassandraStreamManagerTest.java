@@ -210,7 +210,7 @@ public class CassandraStreamManagerTest
 
         Collection<SSTableReader> allSSTables = cfs.getLiveSSTables();
         Assert.assertEquals(1, allSSTables.size());
-        final Token firstToken = allSSTables.iterator().next().first.getToken();
+        final Token firstToken = allSSTables.iterator().next().getFirst().getToken();
         DatabaseDescriptor.setSSTablePreemptiveOpenIntervalInMiB(1);
 
         Set<SSTableReader> sstablesBeforeRewrite = getReadersForRange(new Range<>(firstToken, firstToken));
@@ -261,10 +261,10 @@ public class CassandraStreamManagerTest
     @Test
     public void checkAvailableDiskSpaceAndCompactionsFailing()
     {
-        int threshold = ActiveRepairService.instance.getRepairPendingCompactionRejectThreshold();
-        ActiveRepairService.instance.setRepairPendingCompactionRejectThreshold(1);
+        int threshold = ActiveRepairService.instance().getRepairPendingCompactionRejectThreshold();
+        ActiveRepairService.instance().setRepairPendingCompactionRejectThreshold(1);
         assertFalse(StreamSession.checkAvailableDiskSpaceAndCompactions(createSummaries(), nextTimeUUID(), null, false));
-        ActiveRepairService.instance.setRepairPendingCompactionRejectThreshold(threshold);
+        ActiveRepairService.instance().setRepairPendingCompactionRejectThreshold(threshold);
     }
 
     private Collection<StreamSummary> createSummaries()

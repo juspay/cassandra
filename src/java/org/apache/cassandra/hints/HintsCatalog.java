@@ -162,12 +162,18 @@ final class HintsCatalog
                 FileUtils.handleFSErrorAndPropagate(e);
             }
         }
+        else if (!NativeLibrary.isEnabled())
+        {
+            return;
+        }
         else if (DatabaseDescriptor.isClientInitialized())
         {
             logger.warn("Unable to open hint directory using Native library. Skipping sync.");
         }
         else
         {
+            if (SyncUtil.SKIP_SYNC)
+                return;
             logger.error("Unable to open directory {}", hintsDirectory.absolutePath());
             FileUtils.handleFSErrorAndPropagate(new FSWriteError(new IOException(String.format("Unable to open hint directory %s", hintsDirectory.absolutePath())), hintsDirectory.absolutePath()));
         }

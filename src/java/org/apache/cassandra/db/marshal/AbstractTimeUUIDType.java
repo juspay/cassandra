@@ -21,8 +21,9 @@ import java.nio.ByteBuffer;
 import java.util.UUID;
 
 import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.cql3.Constants;
-import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.Duration;
+import org.apache.cassandra.cql3.terms.Term;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.UUIDSerializer;
 import org.apache.cassandra.utils.TimeUUID;
@@ -41,6 +42,13 @@ public abstract class AbstractTimeUUIDType<T> extends TemporalType<T>
         super(ComparisonType.CUSTOM);
     } // singleton
 
+    @Override
+    public boolean allowsEmpty()
+    {
+        return true;
+    }
+
+    @Override
     public boolean isEmptyValueMeaningless()
     {
         return true;
@@ -198,13 +206,13 @@ public abstract class AbstractTimeUUIDType<T> extends TemporalType<T>
     }
 
     @Override
-    public ByteBuffer addDuration(ByteBuffer temporal, ByteBuffer duration)
+    public ByteBuffer addDuration(Number temporal, Duration duration)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public ByteBuffer substractDuration(ByteBuffer temporal, ByteBuffer duration)
+    public ByteBuffer substractDuration(Number temporal, Duration duration)
     {
         throw new UnsupportedOperationException();
     }

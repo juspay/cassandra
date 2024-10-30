@@ -29,6 +29,7 @@ import java.util.stream.Collectors;
 import com.google.common.collect.ImmutableSet;
 import org.apache.commons.io.FileUtils;
 import org.junit.AfterClass;
+import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -36,7 +37,6 @@ import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
-import org.apache.cassandra.db.compaction.DateTieredCompactionStrategy;
 import org.apache.cassandra.db.compaction.LeveledCompactionStrategy;
 import org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy;
 import org.apache.cassandra.db.compaction.TimeWindowCompactionStrategy;
@@ -67,6 +67,7 @@ import static org.apache.cassandra.db.SystemKeyspace.LEGACY_SSTABLE_ACTIVITY;
 import static org.apache.cassandra.db.SystemKeyspace.SSTABLE_ACTIVITY_V2;
 import static org.apache.cassandra.distributed.shared.FutureUtils.waitOn;
 import static org.apache.cassandra.distributed.test.ExecUtil.rethrow;
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class SSTableIdGenerationTest extends TestBaseImpl
@@ -84,6 +85,11 @@ public class SSTableIdGenerationTest extends TestBaseImpl
         TestBaseImpl.beforeClass();
 
         originalSecurityManager = System.getSecurityManager();
+    }
+
+    @Before
+    public void beforeEach()
+    {
         // we prevent system exit and convert it to exception becuase this is one of the expected test outcomes,
         // and we want to make an assertion on that
         ClusterUtils.preventSystemExit();
@@ -117,7 +123,7 @@ public class SSTableIdGenerationTest extends TestBaseImpl
             restartNode(cluster, 1, true);
 
             createSSTables(cluster.get(1), KEYSPACE, "tbl", 3, 4);
-            assertSSTablesCount(cluster.get(1), 2, 3, KEYSPACE, "tbl");
+            assertSSTablesCount(cluster.get(1), 2, 2, KEYSPACE, "tbl");
             verfiySSTableActivity(cluster, false);
 
             checkRowsNumber(cluster.get(1), KEYSPACE, "tbl", 9);
@@ -151,7 +157,6 @@ public class SSTableIdGenerationTest extends TestBaseImpl
     public final void testCompactionStrategiesWithMixedSSTables() throws Exception
     {
         testCompactionStrategiesWithMixedSSTables(SizeTieredCompactionStrategy.class,
-                                                  DateTieredCompactionStrategy.class,
                                                   TimeWindowCompactionStrategy.class,
                                                   LeveledCompactionStrategy.class);
     }
@@ -172,7 +177,7 @@ public class SSTableIdGenerationTest extends TestBaseImpl
             // create a table and two sstables with sequential id for each strategy, the sstables will contain overlapping partitions
             for (Class<? extends AbstractCompactionStrategy> compactionStrategyClass : compactionStrategyClasses)
             {
-                String tableName = "tbl_" + compactionStrategyClass.getSimpleName().toLowerCase();
+                String tableName = "tbl_" + toLowerCaseLocalized(compactionStrategyClass.getSimpleName());
                 cluster.schemaChange(createTableStmt(KEYSPACE, tableName, compactionStrategyClass));
 
                 createSSTables(cluster.get(1), KEYSPACE, tableName, 1, 2);
@@ -185,12 +190,12 @@ public class SSTableIdGenerationTest extends TestBaseImpl
             // create another two sstables with uuid for each previously created table
             for (Class<? extends AbstractCompactionStrategy> compactionStrategyClass : compactionStrategyClasses)
             {
-                String tableName = "tbl_" + compactionStrategyClass.getSimpleName().toLowerCase();
+                String tableName = "tbl_" + toLowerCaseLocalized(compactionStrategyClass.getSimpleName());
 
                 createSSTables(cluster.get(1), KEYSPACE, tableName, 3, 4);
 
                 // expect to have a mix of sstables with sequential id and uuid
-                assertSSTablesCount(cluster.get(1), 2, 3, KEYSPACE, tableName);
+                assertSSTablesCount(cluster.get(1), 2, 2, KEYSPACE, tableName);
 
                 // after compaction, we expect to have a single sstable with uuid
                 cluster.get(1).forceCompact(KEYSPACE, tableName);
@@ -240,7 +245,7 @@ public class SSTableIdGenerationTest extends TestBaseImpl
             // create 2 sstables with overlapping partitions on node 1 (with UUID ids)
             createSSTables(cluster.get(1), KEYSPACE, "tbl", 3, 4);
 
-            assertSSTablesCount(cluster.get(1), 2, 3, KEYSPACE, "tbl");
+            assertSSTablesCount(cluster.get(1), 2, 2, KEYSPACE, "tbl");
 
             // now start node with UUID disabled and perform repair
             cluster.get(2).config().set(ENABLE_UUID_FIELD_NAME, uuidEnabledOnTargetNode);
@@ -249,14 +254,14 @@ public class SSTableIdGenerationTest extends TestBaseImpl
             assertSSTablesCount(cluster.get(2), 0, 0, KEYSPACE, "tbl");
 
             // at this point we have sstables with seq and uuid on nodes and no sstables on node
-            // when we run repair, we expect streaming all 5 sstables from node 1 to node 2
+            // when we run repair, we expect streaming all 4 sstables from node 1 to node 2
 
             cluster.get(2).nodetool("repair", KEYSPACE);
 
             if (uuidEnabledOnTargetNode)
-                assertSSTablesCount(cluster.get(2), 0, 5, KEYSPACE, "tbl");
+                assertSSTablesCount(cluster.get(2), 0, 4, KEYSPACE, "tbl");
             else
-                assertSSTablesCount(cluster.get(2), 5, 0, KEYSPACE, "tbl");
+                assertSSTablesCount(cluster.get(2), 4, 0, KEYSPACE, "tbl");
 
             waitOn(cluster.get(1).shutdown());
 
@@ -313,16 +318,16 @@ public class SSTableIdGenerationTest extends TestBaseImpl
             uuidOnlyBackupDirs = getBackupDirs(cluster.get(1), KEYSPACE, "tbl_uuid_only");
 
             // at this point, we should have sstables with backups and snapshots for all tables
-            assertSSTablesCount(cluster.get(1), 4, 1, KEYSPACE, "tbl_seq_only");
-            assertSSTablesCount(cluster.get(1), 2, 3, KEYSPACE, "tbl_seq_and_uuid");
+            assertSSTablesCount(cluster.get(1), 4, 0, KEYSPACE, "tbl_seq_only");
+            assertSSTablesCount(cluster.get(1), 2, 2, KEYSPACE, "tbl_seq_and_uuid");
             assertSSTablesCount(cluster.get(1), 0, 4, KEYSPACE, "tbl_uuid_only");
 
-            assertBackupSSTablesCount(cluster.get(1), 4, 1, KEYSPACE, "tbl_seq_only");
-            assertBackupSSTablesCount(cluster.get(1), 2, 3, KEYSPACE, "tbl_seq_and_uuid");
+            assertBackupSSTablesCount(cluster.get(1), 4, 0, KEYSPACE, "tbl_seq_only");
+            assertBackupSSTablesCount(cluster.get(1), 2, 2, KEYSPACE, "tbl_seq_and_uuid");
             assertBackupSSTablesCount(cluster.get(1), 0, 4, KEYSPACE, "tbl_uuid_only");
 
-            assertSnapshotSSTablesCount(cluster.get(1), 4, 1, KEYSPACE, "tbl_seq_only");
-            assertSnapshotSSTablesCount(cluster.get(1), 2, 3, KEYSPACE, "tbl_seq_and_uuid");
+            assertSnapshotSSTablesCount(cluster.get(1), 4, 0, KEYSPACE, "tbl_seq_only");
+            assertSnapshotSSTablesCount(cluster.get(1), 2, 2, KEYSPACE, "tbl_seq_and_uuid");
             assertSnapshotSSTablesCount(cluster.get(1), 0, 4, KEYSPACE, "tbl_uuid_only");
 
             checkRowsNumber(cluster.get(1), KEYSPACE, "tbl_seq_only", 9);
@@ -432,8 +437,16 @@ public class SSTableIdGenerationTest extends TestBaseImpl
 
     private static void assertSSTablesCount(Set<Descriptor> descs, String tableName, int expectedSeqGenIds, int expectedUUIDGenIds)
     {
-        List<String> seqSSTables = descs.stream().filter(desc -> desc.id instanceof SequenceBasedSSTableId).map(Descriptor::baseFilename).sorted().collect(Collectors.toList());
-        List<String> uuidSSTables = descs.stream().filter(desc -> desc.id instanceof UUIDBasedSSTableId).map(Descriptor::baseFilename).sorted().collect(Collectors.toList());
+        List<String> seqSSTables = descs.stream()
+                                        .filter(desc -> desc.id instanceof SequenceBasedSSTableId)
+                                        .map(descriptor -> descriptor.baseFile().toString())
+                                        .sorted()
+                                        .collect(Collectors.toList());
+        List<String> uuidSSTables = descs.stream()
+                                         .filter(desc -> desc.id instanceof UUIDBasedSSTableId)
+                                         .map(descriptor -> descriptor.baseFile().toString())
+                                         .sorted()
+                                         .collect(Collectors.toList());
         assertThat(seqSSTables).describedAs("SSTables of %s with sequence based id", tableName).hasSize(expectedSeqGenIds);
         assertThat(uuidSSTables).describedAs("SSTables of %s with UUID based id", tableName).hasSize(expectedUUIDGenIds);
     }
@@ -526,6 +539,6 @@ public class SSTableIdGenerationTest extends TestBaseImpl
         SimpleQueryResult result = instance.executeInternalWithResult(format("SELECT * FROM %s.%s", ks, tableName));
         Object[][] rows = result.toObjectArrays();
         assertThat(rows).withFailMessage("Invalid results for %s.%s - should have %d rows but has %d: \n%s", ks, tableName, expectedNumber,
-                                         rows.length, result.toString()).hasSize(expectedNumber);
+                                         rows.length, result.toString()).hasNumberOfRows(expectedNumber);
     }
 }

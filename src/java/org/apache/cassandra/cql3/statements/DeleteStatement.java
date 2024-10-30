@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+import java.util.Collections;
 import java.util.List;
 
 import org.apache.cassandra.audit.AuditLogContext;
@@ -32,7 +33,6 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.utils.Pair;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 
@@ -131,7 +131,7 @@ public class DeleteStatement extends ModificationStatement
                       Attributes.Raw attrs,
                       List<Operation.RawDeletion> deletions,
                       WhereClause whereClause,
-                      List<Pair<ColumnIdentifier, ColumnCondition.Raw>> conditions,
+                      List<ColumnCondition.Raw> conditions,
                       boolean ifExists)
         {
             super(name, StatementType.DELETE, attrs, conditions, false, ifExists);
@@ -167,7 +167,8 @@ public class DeleteStatement extends ModificationStatement
                                                                  bindVariables,
                                                                  operations,
                                                                  whereClause,
-                                                                 conditions);
+                                                                 conditions,
+                                                                 Collections.emptyList());
 
             DeleteStatement stmt = new DeleteStatement(bindVariables,
                                                        metadata,

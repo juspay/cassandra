@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.db.guardrails;
 
+import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -317,6 +318,18 @@ public interface GuardrailsMBean
     void setDropKeyspaceEnabled(boolean enabled);
 
     /**
+     * Returns whether bulk load of SSTables is allowed
+     *
+     * @return {@code true} if allowed, {@code false} otherwise.
+     */
+    boolean getBulkLoadEnabled();
+
+    /**
+     * Sets whether bulk load of SSTables is allowed
+     */
+    void setBulkLoadEnabled(boolean enabled);
+
+    /**
      * @return The threshold to warn when requested page size greater than threshold.
      * -1 means disabled.
      */
@@ -372,13 +385,13 @@ public interface GuardrailsMBean
      * @return The threshold to warn when an IN query creates a cartesian product with a size exceeding threshold.
      * -1 means disabled.
      */
-    public int getInSelectCartesianProductWarnThreshold();
+    int getInSelectCartesianProductWarnThreshold();
 
     /**
      * @return The threshold to prevent IN queries creating a cartesian product with a size exceeding threshold.
      * -1 means disabled.
      */
-    public int getInSelectCartesianProductFailThreshold();
+    int getInSelectCartesianProductFailThreshold();
 
     /**
      * @param warn The threshold to warn when an IN query creates a cartesian product with a size exceeding threshold.
@@ -386,7 +399,7 @@ public interface GuardrailsMBean
      * @param fail The threshold to prevent IN queries creating a cartesian product with a size exceeding threshold.
      *             -1 means disabled.
      */
-    public void setInSelectCartesianProductThreshold(int warn, int fail);
+    void setInSelectCartesianProductThreshold(int warn, int fail);
 
     /**
      * @return consistency levels that are warned about when reading.
@@ -469,6 +482,53 @@ public interface GuardrailsMBean
     void setWriteConsistencyLevelsDisallowedCSV(String consistencyLevels);
 
     /**
+     * @return The threshold to warn when encountering partitions larger than threshold, as a string formatted as in,
+     * for example, {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}. A {@code null} value means disabled.
+     */
+    @Nullable
+    String getPartitionSizeWarnThreshold();
+
+    /**
+     * @return The threshold to fail when encountering partitions larger than threshold, as a string formatted as in,
+     * for example, {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}. A {@code null} value means disabled.
+     * Triggering a failure emits a log message and a diagnostic  event, but it doesn't throw an exception interrupting
+     * the offending sstable write.
+     */
+    @Nullable
+    String getPartitionSizeFailThreshold();
+
+    /**
+     * @param warnSize The threshold to warn when encountering partitions larger than threshold, as a string formatted
+     *                 as in, for example, {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}.
+     *                 A {@code null} value means disabled.
+     * @param failSize The threshold to fail when encountering partitions larger than threshold, as a string formatted
+     *                 as in, for example, {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}.
+     *                 A {@code null} value means disabled. Triggering a failure emits a log message and a diagnostic
+     *                 event, but it desn't throw an exception interrupting the offending sstable write.
+     */
+    void setPartitionSizeThreshold(@Nullable String warnSize, @Nullable String failSize);
+
+    /**
+     * @return The threshold to warn when encountering partitions with more tombstones than threshold. -1 means disabled.
+     */
+    long getPartitionTombstonesWarnThreshold();
+
+    /**
+     * @return The threshold to fail when encountering partitions with more tombstones than threshold. -1 means disabled.
+     * Triggering a failure emits a log message and a diagnostic event, but it doesn't throw an exception interrupting
+     * the offending sstable write.
+     */
+    long getPartitionTombstonesFailThreshold();
+
+    /**
+     * @param warn The threshold to warn when encountering partitions with more tombstones than threshold. -1 means disabled.
+     * @param fail The threshold to fail when encountering partitions with more tombstones than threshold. -1 means disabled.
+     *             Triggering a failure emits a log message and a diagnostic event, but it desn't throw an exception
+     *             interrupting the offending sstable write.
+     */
+    void setPartitionTombstonesThreshold(long warn, long fail);
+
+    /**
      * @return The threshold to warn when encountering column values larger than threshold, as a string  formatted as
      * in, for example, {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}. A {@code null} value means disabled.
      */
@@ -549,6 +609,32 @@ public interface GuardrailsMBean
      * @param fail The threshold to prevent creating a UDT with more fields than threshold. -1 means disabled.
      */
     void setFieldsPerUDTThreshold(int warn, int fail);
+
+    /**
+     * @return The threshold to warn when creating a vector with more dimensions than threshold.
+     */
+    int getVectorDimensionsWarnThreshold();
+
+    /**
+     * @return The threshold to fail when creating a vector with more dimensions than threshold.
+     */
+    int getVectorDimensionsFailThreshold();
+
+    /**
+     * @param warn The threshold to warn when creating a vector with more dimensions than threshold.
+     * @param fail The threshold to prevent creating a vector with more dimensions than threshold.
+     */
+    void setVectorDimensionsThreshold(int warn, int fail);
+
+    /**
+     * @param enabled {@code true} if vector type usage is enabled.
+     */
+    void setVectorTypeEnabled(boolean enabled);
+
+    /**
+     * @return {@code true} if vector type usage is enabled.
+     */
+    boolean getVectorTypeEnabled();
 
     /**
      * @return The threshold to warn when local data disk usage percentage exceeds that threshold.
@@ -651,4 +737,194 @@ public interface GuardrailsMBean
      * @param value {@code true} if 0 default TTL on TWCS tables is allowed, {@code false} otherwise.
      */
     void setZeroTTLOnTWCSEnabled(boolean value);
+
+    /**
+     * @return The highest acceptable difference between now and the written value timestamp before triggering a warning.
+     *         Expressed as a string formatted as in, for example, {@code 10s} {@code 20m}, {@code 30h} or {@code 40d}.
+     *         A {@code null} value means disabled.
+     */
+    @Nullable
+    String getMaximumTimestampWarnThreshold();
+
+    /**
+     * @return The highest acceptable difference between now and the written value timestamp before triggering a failure.
+     *         Expressed as a string formatted as in, for example, {@code 10s} {@code 20m}, {@code 30h} or {@code 40d}.
+     *         A {@code null} value means disabled.
+     */
+    @Nullable
+    String getMaximumTimestampFailThreshold();
+
+    /**
+     * Sets the warning upper bound for user supplied timestamps.
+     *
+     * @param warnDuration The highest acceptable difference between now and the written value timestamp before
+     *                     triggering a warning. Expressed as a string formatted as in, for example, {@code 10s},
+     *                     {@code 20m}, {@code 30h} or {@code 40d}. A {@code null} value means disabled.
+     * @param failDuration The highest acceptable difference between now and the written value timestamp before
+     *                     triggering a failure. Expressed as a string formatted as in, for example, {@code 10s},
+     *                     {@code 20m}, {@code 30h} or {@code 40d}. A {@code null} value means disabled.
+     */
+    void setMaximumTimestampThreshold(@Nullable String warnDuration, @Nullable String failDuration);
+
+    /**
+     * @return The lowest acceptable difference between now and the written value timestamp before triggering a warning.
+     *         Expressed as a string formatted as in, for example, {@code 10s} {@code 20m}, {@code 30h} or {@code 40d}.
+     *         A {@code null} value means disabled.
+     */
+    @Nullable
+    String getMinimumTimestampWarnThreshold();
+
+    /**
+     * @return The lowest acceptable difference between now and the written value timestamp before triggering a failure.
+     *         Expressed as a string formatted as in, for example, {@code 10s} {@code 20m}, {@code 30h} or {@code 40d}.
+     *         A {@code null} value means disabled.
+     */
+    @Nullable
+    String getMinimumTimestampFailThreshold();
+
+    /**
+     * Sets the warning lower bound for user supplied timestamps.
+     *
+     * @param warnDuration The lowest acceptable difference between now and the written value timestamp before
+     *                     triggering a warning. Expressed as a string formatted as in, for example, {@code 10s},
+     *                     {@code 20m}, {@code 30h} or {@code 40d}. A {@code null} value means disabled.
+     * @param failDuration The lowest acceptable difference between now and the written value timestamp before
+     *                     triggering a failure. Expressed as a string formatted as in, for example, {@code 10s},
+     *                     {@code 20m}, {@code 30h} or {@code 40d}. A {@code null} value means disabled.
+     */
+    void setMinimumTimestampThreshold(@Nullable String warnDuration, @Nullable String failDuration);
+
+    /**
+     * @return the warning threshold for the number of SAI SSTable indexes searched by a query
+     */
+    int getSaiSSTableIndexesPerQueryWarnThreshold();
+
+    /**
+     * @return the failure threshold for the number of SAI SSTable indexes searched by a query
+     */
+    int getSaiSSTableIndexesPerQueryFailThreshold();
+
+    /**
+     * Sets warning and failure thresholds for the number of SAI SSTable indexes searched by a query
+     *
+     * @param warn value to set for warn threshold
+     * @param fail value to set for fail threshold
+     */
+    void setSaiSSTableIndexesPerQueryThreshold(int warn, int fail);
+
+    /**
+     * @return The warning threshold for string terms written to an SAI index, as a human-readable string.
+     *         (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}) A {@code null} value means disabled.
+     */
+    @Nullable
+    String getSaiStringTermSizeWarnThreshold();
+
+    /**
+     * @return The failure threshold for string terms written to an SAI index, as a human-readable string.
+     *         (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}) A {@code null} value means disabled.
+     */
+    @Nullable
+    String getSaiStringTermSizeFailThreshold();
+
+    /**
+     * @param warnSize The warning threshold for string terms written to an SAI index, as a human-readable string.
+     *                 (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B})
+     *                 A {@code null} value means disabled.
+     * @param failSize The failure threshold for string terms written to an SAI index, as a human-readable string.
+     *                 (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B})
+     *                 A {@code null} value means disabled.
+     */
+    void setSaiStringTermSizeThreshold(@Nullable String warnSize, @Nullable String failSize);
+
+    /**
+     * @return The warning threshold for frozen terms written to an SAI index, as a human-readable string.
+     *         (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}) A {@code null} value means disabled.
+     */
+    @Nullable
+    String getSaiFrozenTermSizeWarnThreshold();
+
+    /**
+     * @return The failure threshold for frozen terms written to an SAI index, as a human-readable string.
+     *         (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}) A {@code null} value means disabled.
+     */
+    @Nullable
+    String getSaiFrozenTermSizeFailThreshold();
+
+    /**
+     * @param warnSize The warning threshold for frozen terms written to an SAI index, as a human-readable string.
+     *                 (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B})
+     *                 A {@code null} value means disabled.
+     * @param failSize The failure threshold for frozen terms written to an SAI index, as a human-readable string.
+     *                 (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B})
+     *                 A {@code null} value means disabled.
+     */
+    void setSaiFrozenTermSizeThreshold(@Nullable String warnSize, @Nullable String failSize);
+
+    /**
+     * @return The warning threshold for vector terms written to an SAI index, as a human-readable string.
+     *         (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}) A {@code null} value means disabled.
+     */
+    @Nullable
+    String getSaiVectorTermSizeWarnThreshold();
+
+    /**
+     * @return The failure threshold for vector terms written to an SAI index, as a human-readable string.
+     *         (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B}) A {@code null} value means disabled.
+     */
+    @Nullable
+    String getSaiVectorTermSizeFailThreshold();
+
+    /**
+     * @param warnSize The warning threshold for vector terms written to an SAI index, as a human-readable string.
+     *                 (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B})
+     *                 A {@code null} value means disabled.
+     * @param failSize The failure threshold for vector terms written to an SAI index, as a human-readable string.
+     *                 (ex. {@code 10GiB}, {@code 20MiB}, {@code 30KiB} or {@code 40B})
+     *                 A {@code null} value means disabled.
+     */
+    void setSaiVectorTermSizeThreshold(@Nullable String warnSize, @Nullable String failSize);
+
+    /**
+     * Returns whether it is possible to execute a query against secondary indexes without specifying
+     * any partition key restrictions.
+     *
+     * @return true if it is possible to execute a query without a partition key, false otherwise
+     */
+    boolean getNonPartitionRestrictedQueryEnabled();
+
+    /**
+     * Sets whether it is possible to execute a query against indexes (secondary or SAI) without specifying
+     * any partition key restrictions.
+     *
+     * @param enabled {@code true} if a query without partition key is enabled or not
+     */
+    void setNonPartitionRestrictedQueryEnabled(boolean enabled);
+
+    /**
+     * @return true if a client warning is emitted for a filtering query with an intersection on mutable columns at a 
+     *         consistency level requiring coordinator reconciliation
+     */
+    boolean getIntersectFilteringQueryWarned();
+    
+    void setIntersectFilteringQueryWarned(boolean value);
+
+    /**
+     * @return true if it is possible to execute a filtering query with an intersection on mutable columns at a 
+     *         consistency level requiring coordinator reconciliation
+     */
+    boolean getIntersectFilteringQueryEnabled();
+    
+    void setIntersectFilteringQueryEnabled(boolean value);
+
+    /**
+     * @return the configuration of password validator.
+     */
+    Map<String, Object> getPasswordValidatorConfig();
+
+    /**
+     * Reconfigures password validator.
+     *
+     * @param config configuration of new password validator
+     */
+    void reconfigurePasswordValidator(Map<String, Object> config);
 }

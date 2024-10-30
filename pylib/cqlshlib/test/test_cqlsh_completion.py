@@ -22,7 +22,7 @@ import locale
 import os
 import re
 from .basecase import BaseTestCase
-from .cassconnect import create_db, remove_db, testrun_cqlsh
+from .cassconnect import create_db, remove_db, cqlsh_testrun
 from .run_cqlsh import TimeoutError
 from cqlshlib.cql3handling import CqlRuleSet
 
@@ -54,7 +54,7 @@ class CqlshCompletionCase(BaseTestCase):
         env['COLUMNS'] = '100000'
         if (locale.getpreferredencoding() != 'UTF-8'):
             env['LC_CTYPE'] = 'en_US.utf8'
-        self.cqlsh_runner = testrun_cqlsh(cqlver=None, env=env)
+        self.cqlsh_runner = cqlsh_testrun(cqlver=None, env=env)
         self.cqlsh = self.cqlsh_runner.__enter__()
 
     def tearDown(self):
@@ -100,7 +100,7 @@ class CqlshCompletionCase(BaseTestCase):
 
         if split_completed_lines:
             completed_lines = list(map(set, (completion_separation_re.split(line.strip())
-                                  for line in choice_lines)))
+                                             for line in choice_lines)))
 
             if not completed_lines:
                 return set()
@@ -163,8 +163,8 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions('', choices=('?', 'ALTER', 'BEGIN', 'CAPTURE', 'CONSISTENCY',
                                          'COPY', 'CREATE', 'DEBUG', 'DELETE', 'DESC', 'DESCRIBE',
                                          'DROP', 'GRANT', 'HELP', 'INSERT', 'LIST', 'LOGIN', 'PAGING', 'REVOKE',
-                                         'SELECT', 'SHOW', 'SOURCE', 'TRACING', 'EXPAND', 'SERIAL', 'TRUNCATE',
-                                         'UPDATE', 'USE', 'exit', 'quit', 'CLEAR', 'CLS'))
+                                         'SELECT', 'SHOW', 'SOURCE', 'TRACING', 'ELAPSED', 'EXPAND', 'SERIAL', 'TRUNCATE',
+                                         'UPDATE', 'USE', 'exit', 'quit', 'CLEAR', 'CLS', 'history'))
 
     def test_complete_command_words(self):
         self.trycompletions('alt', '\b\b\bALTER ')
@@ -210,17 +210,17 @@ class TestCqlshCompletion(CqlshCompletionCase):
 
         self.trycompletions(
             'INSERT INTO twenty_rows_composite_table (a, b, c) VALUES (',
-            ['<value for a (text)>'],
+            choices=['<value for a (text)>'],
             split_completed_lines=False)
 
         self.trycompletions(
             "INSERT INTO twenty_rows_composite_table (a, b, c) VALUES ('",
-            ['<value for a (text)>'],
+            choices=['<value for a (text)>'],
             split_completed_lines=False)
 
         self.trycompletions(
             "INSERT INTO twenty_rows_composite_table (a, b, c) VALUES ( 'eggs",
-            ['<value for a (text)>'],
+            choices=['<value for a (text)>'],
             split_completed_lines=False)
 
         self.trycompletions(
@@ -230,7 +230,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions(
             ("INSERT INTO twenty_rows_composite_table (a, b, c) "
              "VALUES ( 'eggs',"),
-            ['<value for b (text)>'],
+            choices=['<value for b (text)>'],
             split_completed_lines=False)
 
         self.trycompletions(
@@ -248,9 +248,9 @@ class TestCqlshCompletion(CqlshCompletionCase):
              "VALUES ( 'eggs', 'sausage', 'spam');"),
             choices=['?', 'ALTER', 'BEGIN', 'CAPTURE', 'CONSISTENCY', 'COPY',
                      'CREATE', 'DEBUG', 'DELETE', 'DESC', 'DESCRIBE', 'DROP',
-                     'EXPAND', 'GRANT', 'HELP', 'INSERT', 'LIST', 'LOGIN', 'PAGING',
+                     'ELAPSED', 'EXPAND', 'GRANT', 'HELP', 'INSERT', 'LIST', 'LOGIN', 'PAGING',
                      'REVOKE', 'SELECT', 'SHOW', 'SOURCE', 'SERIAL', 'TRACING',
-                     'TRUNCATE', 'UPDATE', 'USE', 'exit', 'quit',
+                     'TRUNCATE', 'UPDATE', 'USE', 'exit', 'history', 'quit',
                      'CLEAR', 'CLS'])
 
         self.trycompletions(
@@ -323,6 +323,22 @@ class TestCqlshCompletion(CqlshCompletionCase):
              "VALUES ( 'eggs', 'sausage', 'spam') USING TTL 0 AND TIMESTAMP 0 AND "),
             choices=[])
 
+        self.trycompletions(
+            ("INSERT INTO has_all_types (num, setcol) VALUES (0, "),
+            immediate="{ ")
+
+        self.trycompletions(
+            ("INSERT INTO has_all_types (num, mapcol) VALUES (0, "),
+            immediate="{ ")
+
+        self.trycompletions(
+            ("INSERT INTO has_all_types (num, listcol) VALUES (0, "),
+            immediate="[ ")
+
+        self.trycompletions(
+            ("INSERT INTO has_all_types (num, vectorcol) VALUES (0, "),
+            immediate="[ ")
+
     def test_complete_in_update(self):
         self.trycompletions("UPD", immediate="ATE ")
         self.trycompletions("UPDATE ",
@@ -365,7 +381,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonel",
                             immediate='ykey ')
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonelykey ",
-                            choices=['=', '<=', '>=', '>', '<', 'CONTAINS', 'IN', '['])
+                            choices=['=', '<=', '>=', '>', '<', '!=', 'BETWEEN', 'CONTAINS', 'IN', 'NOT', '['])
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonelykey = 0.0 ",
                             choices=['AND', 'IF', ';'])
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonelykey = 0.0 AND ",
@@ -381,7 +397,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             choices=['EXISTS', '<quotedName>', '<identifier>'])
 
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE TOKEN(lonelykey) <= TOKEN(13) IF EXISTS ",
-                            choices=['>=', '!=', '<=', 'IN', '[', ';', '=', '<', '>', '.', 'CONTAINS'])
+                            choices=['>=', '!=', '<=', 'IN','[', ';', '=', '<', '>', '.', 'CONTAINS'])
 
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE TOKEN(lonelykey) <= TOKEN(13) IF lonelykey ",
                             choices=['>=', '!=', '<=', 'IN', '=', '<', '>', 'CONTAINS'])
@@ -448,7 +464,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             choices=['a', 'b', 'TOKEN('])
 
         self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE a ',
-                            choices=['<=', '>=', 'CONTAINS', 'IN', '[', '=', '<', '>'])
+                            choices=['<=', '>=', 'BETWEEN', 'CONTAINS', 'IN', 'NOT' , '[', '=', '<', '>', '!='])
 
         self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE TOKEN(',
                             immediate='a ')
@@ -477,8 +493,8 @@ class TestCqlshCompletion(CqlshCompletionCase):
                              'TOKEN(a) >= TOKEN(0) IF b CONTAINS '),
                             choices=['false', 'true', '<pgStringLiteral>',
                                      '-', '<float>', 'TOKEN', '<identifier>',
-                                     '<uuid>', '{', '[', 'NULL','<quotedStringLiteral>',
-                                     '<blobLiteral>','<wholenumber>', 'KEY'])
+                                     '<uuid>', '{', '[', 'NULL', '<quotedStringLiteral>',
+                                     '<blobLiteral>', '<wholenumber>', 'KEY'])
         self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
                              'TOKEN(a) >= TOKEN(0) IF b < 0 '),
                             choices=['AND', ';'])
@@ -492,7 +508,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
     def test_complete_in_begin_batch(self):
         self.trycompletions('BEGIN ', choices=['BATCH', 'COUNTER', 'UNLOGGED'])
         self.trycompletions('BEGIN BATCH ', choices=['DELETE', 'INSERT', 'UPDATE', 'USING'])
-        self.trycompletions('BEGIN BATCH INSERT ', immediate='INTO ' )
+        self.trycompletions('BEGIN BATCH INSERT ', immediate='INTO ')
 
     def test_complete_in_create_keyspace(self):
         self.trycompletions('create keyspace ', '', choices=('<identifier>', '<quotedName>', 'IF'))
@@ -572,18 +588,18 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions('CREATE TYPE foo ', choices=['(', '.'])
 
     def test_complete_in_drop_type(self):
-        self.trycompletions('DROP TYPE ', choices=['IF', 'system_views.',
-                                                    'tags', 'system_traces.', 'system_distributed.',
-                                                    'phone_number', 'quote_udt', 'band_info_type', 'address', 'system.', 'system_schema.',
-                                                    'system_auth.', 'system_virtual_schema.', self.cqlsh.keyspace + '.'
-                                                    ])
+        self.trycompletions('DROP TYPE ',
+                            choices=['IF', 'system_views.', 'system_metrics.',
+                                     'tags', 'system_traces.', 'system_distributed.', 'system_cluster_metadata.',
+                                     'phone_number', 'quote_udt', 'band_info_type', 'address', 'system.', 'system_schema.',
+                                     'system_auth.', 'system_virtual_schema.', self.cqlsh.keyspace + '.'])
 
     def test_complete_in_create_trigger(self):
-        self.trycompletions('CREATE TRIGGER ', choices=['<identifier>', '<quotedName>', 'IF' ])
-        self.trycompletions('CREATE TRIGGER foo ', immediate='ON ' )
-        self.trycompletions('CREATE TRIGGER foo ON ', choices=['system.', 'system_auth.',
-                                           'system_distributed.', 'system_schema.', 'system_traces.', 'system_views.',
-                                           'system_virtual_schema.' ], other_choices_ok=True)
+        self.trycompletions('CREATE TRIGGER ', choices=['<identifier>', '<quotedName>', 'IF'])
+        self.trycompletions('CREATE TRIGGER foo ', immediate='ON ')
+        self.trycompletions('CREATE TRIGGER foo ON ', choices=['system.', 'system_auth.', 'system_distributed.',
+                                                               'system_schema.', 'system_traces.', 'system_views.',
+                                                               'system_virtual_schema.'], other_choices_ok=True)
 
     def create_columnfamily_table_template(self, name):
         """Parameterized test for CREATE COLUMNFAMILY and CREATE TABLE. Since
@@ -620,11 +636,28 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions(prefix + ' new_table (col_a ine',
                             immediate='t ')
         self.trycompletions(prefix + ' new_table (col_a int ',
-                            choices=[',', 'PRIMARY'])
+                            choices=[',', 'MASKED', 'PRIMARY'])
+        self.trycompletions(prefix + ' new_table (col_a int M',
+                            immediate='ASKED WITH ')
+        self.trycompletions(prefix + ' new_table (col_a int MASKED WITH ',
+                            choices=['DEFAULT', self.cqlsh.keyspace + '.', 'system.'],
+                            other_choices_ok=True)
         self.trycompletions(prefix + ' new_table (col_a int P',
                             immediate='RIMARY KEY ')
         self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY ',
                             choices=[')', ','])
+
+        self.trycompletions(prefix + ' new_table (col_a v',
+                            choices=['varchar', 'varint', 'vector'])
+        self.trycompletions(prefix + ' new_table (col_a ve',
+                            immediate='ctor ')
+        self.trycompletions(prefix + ' new_table (col_a vector<',
+                            choices=['address', 'boolean', 'duration', 'list'],
+                            other_choices_ok=True)
+        self.trycompletions(prefix + ' new_table (col_a vector<float, ',
+                            choices=['<wholenumber>'])
+        self.trycompletions(prefix + ' new_table (col_a vector<float, 2 ',
+                            immediate='>')
 
         self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY,',
                             choices=['<identifier>', '<quotedName>'])
@@ -669,8 +702,8 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             + "{'class': '",
                             choices=['SizeTieredCompactionStrategy',
                                      'LeveledCompactionStrategy',
-                                     'DateTieredCompactionStrategy',
-                                     'TimeWindowCompactionStrategy'])
+                                     'TimeWindowCompactionStrategy',
+                                     'UnifiedCompactionStrategy'])
         self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
                             + "{'class': 'S",
                             immediate="izeTieredCompactionStrategy'")
@@ -709,20 +742,22 @@ class TestCqlshCompletion(CqlshCompletionCase):
                                      'COMPACT', 'caching', 'comment',
                                      'min_index_interval', 'speculative_retry', 'additional_write_policy', 'cdc', 'read_repair'])
         self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
-                            + "{'class': 'DateTieredCompactionStrategy', '",
-                            choices=['base_time_seconds', 'max_sstable_age_days',
-                                     'timestamp_resolution', 'min_threshold', 'class', 'max_threshold',
-                                     'tombstone_compaction_interval', 'tombstone_threshold',
-                                     'enabled', 'unchecked_tombstone_compaction',
-                                     'max_window_size_seconds',
-                                     'only_purge_repaired_tombstones', 'provide_overlapping_tombstones'])
-        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
                             + "{'class': 'TimeWindowCompactionStrategy', '",
                             choices=['compaction_window_unit', 'compaction_window_size',
                                      'timestamp_resolution', 'min_threshold', 'class', 'max_threshold',
                                      'tombstone_compaction_interval', 'tombstone_threshold',
                                      'enabled', 'unchecked_tombstone_compaction',
                                      'only_purge_repaired_tombstones', 'provide_overlapping_tombstones'])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'UnifiedCompactionStrategy', '",
+                            choices=['scaling_parameters', 'min_sstable_size',
+                                     'flush_size_override', 'base_shard_count', 'class', 'target_sstable_size',
+                                     'sstable_growth', 'max_sstables_to_compact',
+                                     'enabled', 'expired_sstable_check_frequency_seconds',
+                                     'unsafe_aggressive_sstable_expiration', 'overlap_inclusion_method',
+                                     'tombstone_threshold', 'tombstone_compaction_interval',
+                                     'unchecked_tombstone_compaction', 'provide_overlapping_tombstones',
+                                     'max_threshold', 'only_purge_repaired_tombstones'])
 
     def test_complete_in_create_columnfamily(self):
         self.trycompletions('CREATE C', choices=['COLUMNFAMILY', 'CUSTOM'])
@@ -733,12 +768,12 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions('CREATE MAT', immediate='ERIALIZED VIEW ')
         self.trycompletions('CREATE MATERIALIZED VIEW AS ', choices=['AS', 'SELECT'])
         self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * ', immediate='FROM ')
-        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers ', immediate = 'WHERE ')
-        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id ', immediate='IS NOT NULL ' )
+        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers ', immediate='WHERE ')
+        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id ', immediate='IS NOT NULL ')
         self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PR', immediate='IMARY KEY ( ')
-        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PRIMARY KEY (host_id) ', choices=[';','WITH'])
-        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PRIMARY KEY (a, b) ', choices=[';','WITH'])
-        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PRIMARY KEY ((a,b), c) ', choices=[';','WITH'])
+        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PRIMARY KEY (host_id) ', choices=[';', 'WITH'])
+        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PRIMARY KEY (a, b) ', choices=[';', 'WITH'])
+        self.trycompletions('CREATE MATERIALIZED VIEW AS SELECT * FROM system.peers WHERE host_id IS NOT NULL PRIMARY KEY ((a,b), c) ', choices=[';', 'WITH'])
 
     def test_complete_in_create_table(self):
         self.trycompletions('CREATE T', choices=['TRIGGER', 'TABLE', 'TYPE'])
@@ -860,9 +895,9 @@ class TestCqlshCompletion(CqlshCompletionCase):
 
     def test_complete_in_use(self):
         self.trycompletions('US', immediate='E ')
-        self.trycompletions('USE ', choices=[self.cqlsh.keyspace, 'system', 'system_auth',
-                                           'system_distributed', 'system_schema', 'system_traces', 'system_views',
-                                           'system_virtual_schema' ])
+        self.trycompletions('USE ', choices=[self.cqlsh.keyspace, 'system', 'system_auth', 'system_metrics',
+                                             'system_distributed', 'system_schema', 'system_traces', 'system_views',
+                                             'system_virtual_schema', 'system_cluster_metadata'])
 
     def test_complete_in_create_index(self):
         self.trycompletions('CREATE I', immediate='NDEX ')
@@ -885,7 +920,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions("GR",
                             immediate='ANT ')
         self.trycompletions("GRANT ",
-                            choices=['ALL', 'ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'MODIFY', 'SELECT'],
+                            choices=['ALL', 'ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'MODIFY', 'SELECT', 'UNMASK', 'SELECT_MASKED'],
                             other_choices_ok=True)
         self.trycompletions("GRANT MODIFY ",
                             choices=[',', 'ON', 'PERMISSION'])
@@ -894,7 +929,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions("GRANT MODIFY PERMISSION ",
                             choices=[',', 'ON'])
         self.trycompletions("GRANT MODIFY PERMISSION, ",
-                            choices=['ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'SELECT'])
+                            choices=['ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'SELECT', 'UNMASK', 'SELECT_MASKED'])
         self.trycompletions("GRANT MODIFY PERMISSION, D",
                             choices=['DESCRIBE', 'DROP'])
         self.trycompletions("GRANT MODIFY PERMISSION, DR",
@@ -916,7 +951,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions("RE",
                             immediate='VOKE ')
         self.trycompletions("REVOKE ",
-                            choices=['ALL', 'ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'MODIFY', 'SELECT'],
+                            choices=['ALL', 'ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'MODIFY', 'SELECT', 'UNMASK', 'SELECT_MASKED'],
                             other_choices_ok=True)
         self.trycompletions("REVOKE MODIFY ",
                             choices=[',', 'ON', 'PERMISSION'])
@@ -925,7 +960,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions("REVOKE MODIFY PERMISSION ",
                             choices=[',', 'ON'])
         self.trycompletions("REVOKE MODIFY PERMISSION, ",
-                            choices=['ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'SELECT'])
+                            choices=['ALTER', 'AUTHORIZE', 'CREATE', 'DESCRIBE', 'DROP', 'EXECUTE', 'SELECT', 'UNMASK', 'SELECT_MASKED'])
         self.trycompletions("REVOKE MODIFY PERMISSION, D",
                             choices=['DESCRIBE', 'DROP'])
         self.trycompletions("REVOKE MODIFY PERMISSION, DR",
@@ -956,23 +991,39 @@ class TestCqlshCompletion(CqlshCompletionCase):
                                                      'dynamic_columns',
                                                      'twenty_rows_composite_table',
                                                      'utf8_with_special_chars',
-                                                     'system_traces.', 'songs', 'system_views.',
+                                                     'system_traces.', 'songs', 'system_views.', 'system_metrics.',
                                                      'system_virtual_schema.',
                                                      'system_schema.', 'system_distributed.',
+                                                     'system_cluster_metadata.',
                                                      self.cqlsh.keyspace + '.'])
         self.trycompletions('ALTER TABLE IF EXISTS new_table ADD ', choices=['<new_column_name>', 'IF'])
         self.trycompletions('ALTER TABLE IF EXISTS new_table ADD IF NOT EXISTS ', choices=['<new_column_name>'])
         self.trycompletions('ALTER TABLE new_table ADD IF NOT EXISTS ', choices=['<new_column_name>'])
+        self.trycompletions('ALTER TABLE new_table ADD col int ', choices=[';', 'MASKED', 'static'])
+        self.trycompletions('ALTER TABLE new_table ADD col int M', immediate='ASKED WITH ')
+        self.trycompletions('ALTER TABLE new_table ADD col int MASKED WITH ',
+                            choices=['DEFAULT', self.cqlsh.keyspace + '.', 'system.'],
+                            other_choices_ok=True)
         self.trycompletions('ALTER TABLE IF EXISTS new_table RENAME ', choices=['IF', '<quotedName>', '<identifier>'])
         self.trycompletions('ALTER TABLE new_table RENAME ', choices=['IF', '<quotedName>', '<identifier>'])
         self.trycompletions('ALTER TABLE IF EXISTS new_table DROP ', choices=['IF', '<quotedName>', '<identifier>'])
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER ', choices=['IF', '<quotedName>', '<identifier>'])
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER IF E', immediate='XISTS ')
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER IF EXISTS col ', choices=['MASKED', 'DROP'])
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER IF EXISTS col M', immediate='ASKED WITH ')
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER IF EXISTS col MASKED WITH ',
+                            choices=['DEFAULT', self.cqlsh.keyspace + '.', 'system.'],
+                            other_choices_ok=True)
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER IF EXISTS col D', immediate='ROP MASKED ;')
+        self.trycompletions('ALTER TABLE IF EXISTS new_table ALTER IF EXISTS col DROP M', immediate='ASKED ;')
 
     def test_complete_in_alter_type(self):
         self.trycompletions('ALTER TYPE I', immediate='F EXISTS ')
         self.trycompletions('ALTER TYPE ', choices=['IF', 'system_views.',
-                                                    'tags', 'system_traces.', 'system_distributed.',
+                                                    'tags', 'system_traces.', 'system_distributed.', 'system_metrics.',
                                                     'phone_number', 'quote_udt', 'band_info_type', 'address', 'system.', 'system_schema.',
-                                                    'system_auth.', 'system_virtual_schema.', self.cqlsh.keyspace + '.'
+                                                    'system_auth.', 'system_virtual_schema.', 'system_cluster_metadata.',
+                                                    self.cqlsh.keyspace + '.'
                                                     ])
         self.trycompletions('ALTER TYPE IF EXISTS new_type ADD ', choices=['<new_field_name>', 'IF'])
         self.trycompletions('ALTER TYPE IF EXISTS new_type ADD IF NOT EXISTS ', choices=['<new_field_name>'])
@@ -983,25 +1034,33 @@ class TestCqlshCompletion(CqlshCompletionCase):
 
     def test_complete_in_create_role(self):
         self.trycompletions('CREATE ROLE ', choices=['<identifier>', 'IF', '<quotedName>'])
-        self.trycompletions('CREATE ROLE IF ', immediate='NOT EXISTS ');
-        self.trycompletions('CREATE ROLE foo WITH ', choices=['ACCESS', 'HASHED', 'LOGIN', 'OPTIONS', 'PASSWORD', 'SUPERUSER'])
-        self.trycompletions('CREATE ROLE foo WITH HASHED ', immediate='PASSWORD = ');
+        self.trycompletions('CREATE ROLE IF ', immediate='NOT EXISTS ')
+        self.trycompletions('CREATE ROLE foo WITH ', choices=['ACCESS', 'HASHED', 'LOGIN', 'OPTIONS', 'PASSWORD', 'SUPERUSER', 'GENERATED'])
+        self.trycompletions('CREATE ROLE foo WITH HASHED ', immediate='PASSWORD = ')
         self.trycompletions('CREATE ROLE foo WITH ACCESS TO ', choices=['ALL', 'DATACENTERS'])
         self.trycompletions('CREATE ROLE foo WITH ACCESS TO ALL ', immediate='DATACENTERS ')
+        self.trycompletions('CREATE ROLE foo WITH ACCESS FROM ', choices=['ALL', 'CIDRS'])
+        self.trycompletions('CREATE ROLE foo WITH ACCESS FROM ALL ', immediate='CIDRS ')
 
     def test_complete_in_alter_role(self):
         self.trycompletions('ALTER ROLE ', choices=['<identifier>', 'IF', '<quotedName>'])
+        self.trycompletions('ALTER ROLE IF ', immediate='EXISTS ')
         self.trycompletions('ALTER ROLE foo ', immediate='WITH ')
-        self.trycompletions('ALTER ROLE foo WITH ', choices=['ACCESS', 'HASHED', 'LOGIN', 'OPTIONS', 'PASSWORD', 'SUPERUSER'])
+        self.trycompletions('ALTER ROLE foo WITH ', choices=['ACCESS', 'HASHED', 'LOGIN', 'OPTIONS', 'PASSWORD', 'SUPERUSER', 'GENERATED'])
         self.trycompletions('ALTER ROLE foo WITH ACCESS TO ', choices=['ALL', 'DATACENTERS'])
+        self.trycompletions('ALTER ROLE foo WITH ACCESS FROM ', choices=['ALL', 'CIDRS'])
+
+    def test_complete_in_create_user(self):
+        self.trycompletions('CREATE USER ', choices=['<username>', 'IF'])
+        self.trycompletions('CREATE USER IF ', immediate='NOT EXISTS ')
 
     def test_complete_in_drop_role(self):
         self.trycompletions('DROP ROLE ', choices=['<identifier>', 'IF', '<quotedName>'])
 
-
     def test_complete_in_list(self):
-        self.trycompletions('LIST ', choices=['ALL', 'AUTHORIZE', 'DESCRIBE', 'EXECUTE', 'ROLES', 'USERS', 'ALTER', 'CREATE', 'DROP', 'MODIFY', 'SELECT'])
-
+        self.trycompletions('LIST ',
+                            choices=['ALL', 'AUTHORIZE', 'DESCRIBE', 'EXECUTE', 'ROLES', 'USERS', 'ALTER',
+                                     'CREATE', 'DROP', 'MODIFY', 'SELECT', 'UNMASK', 'SELECT_MASKED', 'SUPERUSERS'])
 
     # Non-CQL Shell Commands
 
@@ -1009,8 +1068,8 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions('CAPTURE ', choices=['OFF', ';', '<enter>'], other_choices_ok=True)
 
     def test_complete_in_paging(self):
-        self.trycompletions('PAGING ', choices=['ON', 'OFF', ';', '<enter>', '<wholenumber>' ] )
-        self.trycompletions('PAGING 50 ', choices=[';', '<enter>' ] )
+        self.trycompletions('PAGING ', choices=['ON', 'OFF', ';', '<enter>', '<wholenumber>'])
+        self.trycompletions('PAGING 50 ', choices=[';', '<enter>'])
 
     def test_complete_in_serial(self):
         self.trycompletions('SERIAL CONSISTENCY ', choices=[';', '<enter>', 'LOCAL_SERIAL', 'SERIAL'])

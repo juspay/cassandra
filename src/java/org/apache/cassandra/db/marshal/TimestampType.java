@@ -20,9 +20,9 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 import java.util.Date;
 
-import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.terms.Constants;
 import org.apache.cassandra.cql3.Duration;
-import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.terms.Term;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +54,12 @@ public class TimestampType extends TemporalType<Date>
     private static final ByteBuffer MASKED_VALUE = instance.decompose(new Date(0));
 
     private TimestampType() {super(ComparisonType.CUSTOM);} // singleton
+
+    @Override
+    public boolean allowsEmpty()
+    {
+        return true;
+    }
 
     public boolean isEmptyValueMeaningless()
     {
@@ -118,7 +124,7 @@ public class TimestampType extends TemporalType<Date>
 
     private String toString(Date date)
     {
-        return date != null ? TimestampSerializer.getJsonDateFormatter().format(date) : "";
+        return date != null ? TimestampSerializer.getJsonDateFormatter().format(date.toInstant()) : "";
     }
 
     @Override

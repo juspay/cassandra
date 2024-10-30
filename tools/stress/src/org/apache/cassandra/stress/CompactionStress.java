@@ -21,7 +21,12 @@ package org.apache.cassandra.stress;
 import java.io.File;
 import java.io.IOError;
 import java.net.URI;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -31,29 +36,36 @@ import javax.inject.Inject;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.Uninterruptibles;
 
-import io.airlift.airline.*;
+import io.airlift.airline.Cli;
+import io.airlift.airline.Command;
+import io.airlift.airline.Help;
+import io.airlift.airline.HelpOption;
+import io.airlift.airline.Option;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.io.sstable.StressCQLSSTableWriter;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.StressCQLSSTableWriter;
+import org.apache.cassandra.io.sstable.format.SSTableFormat.Components;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.TokenMetadata;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.stress.generate.PartitionGenerator;
 import org.apache.cassandra.stress.generate.SeedManager;
 import org.apache.cassandra.stress.operations.userdefined.SchemaInsert;
 import org.apache.cassandra.stress.settings.StressSettings;
+import org.apache.cassandra.tcm.ClusterMetadata;
+import org.apache.cassandra.tcm.ClusterMetadataService;
 import org.apache.cassandra.tools.nodetool.CompactionStats;
+import org.apache.cassandra.tools.nodetool.formatter.TableBuilder;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.concurrent.Future;
@@ -115,7 +127,7 @@ public abstract class CompactionStress implements Runnable
 
     ColumnFamilyStore initCf(StressProfile stressProfile, boolean loadSSTables)
     {
-        generateTokens(stressProfile.seedStr, StorageService.instance.getTokenMetadata(), numTokens);
+        generateTokens(stressProfile.seedStr, numTokens);
 
         CreateTableStatement.Raw createStatement = stressProfile.getCreateStatement();
         List<File> dataDirectories = getDataDirectories();
@@ -131,7 +143,7 @@ public abstract class CompactionStress implements Runnable
             for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
             {
                 Set<Component> components = entry.getValue();
-                if (!components.contains(Component.DATA))
+                if (!components.contains(Components.DATA))
                     continue;
 
                 try
@@ -182,12 +194,12 @@ public abstract class CompactionStress implements Runnable
      * We need consistency to write and compact the same data offline
      * in the case of a range aware sstable writer.
      */
-    private void generateTokens(String seed, TokenMetadata tokenMetadata, Integer numTokens)
+    private void generateTokens(String seed, Integer numTokens)
     {
         Random random = new Random(seed.hashCode());
 
-        IPartitioner p = tokenMetadata.partitioner;
-        tokenMetadata.clearUnsafe();
+        IPartitioner p = ClusterMetadata.current().tokenMap.partitioner();
+       // tokenMetadata.clearUnsafe();
         for (int i = 1; i <= numTokens; i++)
         {
             InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
@@ -195,7 +207,7 @@ public abstract class CompactionStress implements Runnable
             for (int j = 0; j < numTokens; ++j)
                 tokens.add(p.getRandomToken(random));
 
-            tokenMetadata.updateNormalTokens(tokens, addr);
+//            tokenMetadata.updateNormalTokens(tokens, addr);
         }
     }
 
@@ -214,6 +226,7 @@ public abstract class CompactionStress implements Runnable
 
         public void run()
         {
+            ClusterMetadataService.initializeForTools(true);
             //Setup
             CompactionManager.instance.setMaximumCompactorThreads(threads);
             CompactionManager.instance.setCoreCompactorThreads(threads);
@@ -264,7 +277,7 @@ public abstract class CompactionStress implements Runnable
     {
         System.out.println("========");
         System.out.println(String.format("Pending compactions: %d\n", CompactionManager.instance.getPendingTasks()));
-        CompactionStats.reportCompactionTable(CompactionManager.instance.getCompactions(), 0, true, System.out);
+        CompactionStats.reportCompactionTable(CompactionManager.instance.getCompactions(), 0, true, System.out, new TableBuilder());
     }
 
 
@@ -290,6 +303,8 @@ public abstract class CompactionStress implements Runnable
 
         public void run()
         {
+            ClusterMetadataService.initializeForTools(true);
+            Keyspace.setInitialized();
             StressProfile stressProfile = getStressProfile();
             ColumnFamilyStore cfs = initCf(stressProfile, false);
             Directories directories = cfs.getDirectories();

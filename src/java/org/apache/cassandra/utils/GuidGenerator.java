@@ -23,6 +23,7 @@ import java.util.Random;
 
 import static org.apache.cassandra.config.CassandraRelevantProperties.JAVA_SECURITY_EGD;
 import static org.apache.cassandra.utils.Clock.Global.currentTimeMillis;
+import static org.apache.cassandra.utils.LocalizeString.toUpperCaseLocalized;
 
 public class GuidGenerator
 {
@@ -34,7 +35,7 @@ public class GuidGenerator
     {
         if (!JAVA_SECURITY_EGD.isPresent())
         {
-            System.setProperty("java.security.egd", "file:/dev/urandom");
+            JAVA_SECURITY_EGD.setString("file:/dev/urandom");
         }
         mySecureRand = new SecureRandom();
         long secureInitializer = mySecureRand.nextLong();
@@ -101,7 +102,7 @@ public class GuidGenerator
 
     private static String convertToStandardFormat(String valueAfterMD5)
     {
-        String raw = valueAfterMD5.toUpperCase();
+        String raw = toUpperCaseLocalized(valueAfterMD5);
         StringBuilder sb = new StringBuilder();
         sb.append(raw.substring(0, 8))
           .append("-")

@@ -54,6 +54,7 @@ import org.apache.cassandra.streaming.StreamingState;
 import org.apache.cassandra.utils.FBUtilities;
 import org.assertj.core.util.Throwables;
 
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
 import static org.apache.cassandra.utils.TimeUUID.Generator.nextTimeUUID;
 
 public class StreamingVirtualTableTest extends CQLTester
@@ -67,7 +68,6 @@ public class StreamingVirtualTableTest extends CQLTester
     @BeforeClass
     public static void setup()
     {
-        CQLTester.setUpClass();
         StreamingVirtualTable table = new StreamingVirtualTable(KS_NAME);
         TABLE_NAME = table.toString();
         VirtualKeyspaceRegistry.instance.register(new VirtualKeyspace(KS_NAME, ImmutableList.of(table)));
@@ -96,9 +96,9 @@ public class StreamingVirtualTableTest extends CQLTester
         assertRows(execute(t("select id, follower, operation, peers, status, progress_percentage, last_updated_at, failure_cause, success_message from %s")),
                    new Object[] { state.id(), true, "Repair", Collections.emptyList(), "start", 0F, new Date(state.lastUpdatedAtMillis()), null, null });
 
-        state.handleStreamEvent(new StreamEvent.SessionPreparedEvent(state.id(), new SessionInfo(PEER2, 1, PEER1, Collections.emptyList(), Collections.emptyList(), StreamSession.State.PREPARING), StreamSession.PrepareDirection.ACK));
+        state.handleStreamEvent(new StreamEvent.SessionPreparedEvent(state.id(), new SessionInfo(PEER2, 1, PEER1, Collections.emptyList(), Collections.emptyList(), StreamSession.State.PREPARING, null), StreamSession.PrepareDirection.ACK));
 
-        state.onSuccess(new StreamState(state.id(), StreamOperation.REPAIR, ImmutableSet.of(new SessionInfo(PEER2, 1, PEER1, Collections.emptyList(), Collections.emptyList(), StreamSession.State.COMPLETE))));
+        state.onSuccess(new StreamState(state.id(), StreamOperation.REPAIR, ImmutableSet.of(new SessionInfo(PEER2, 1, PEER1, Collections.emptyList(), Collections.emptyList(), StreamSession.State.COMPLETE, null))));
         assertRows(execute(t("select id, follower, operation, peers, status, progress_percentage, last_updated_at, failure_cause, success_message from %s")),
                    new Object[] { state.id(), true, "Repair", Arrays.asList(address(127, 0, 0, 2).toString()), "success", 100F, new Date(state.lastUpdatedAtMillis()), null, null });
     }
@@ -121,8 +121,8 @@ public class StreamingVirtualTableTest extends CQLTester
         StreamResultFuture future = state.future();
         state.phase.start();
 
-        SessionInfo s1 = new SessionInfo(PEER2, 0, FBUtilities.getBroadcastAddressAndPort(), Arrays.asList(streamSummary()), Arrays.asList(streamSummary(), streamSummary()), StreamSession.State.PREPARING);
-        SessionInfo s2 = new SessionInfo(PEER3, 0, FBUtilities.getBroadcastAddressAndPort(), Arrays.asList(streamSummary()), Arrays.asList(streamSummary(), streamSummary()), StreamSession.State.PREPARING);
+        SessionInfo s1 = new SessionInfo(PEER2, 0, FBUtilities.getBroadcastAddressAndPort(), Arrays.asList(streamSummary()), Arrays.asList(streamSummary(), streamSummary()), StreamSession.State.PREPARING, null);
+        SessionInfo s2 = new SessionInfo(PEER3, 0, FBUtilities.getBroadcastAddressAndPort(), Arrays.asList(streamSummary()), Arrays.asList(streamSummary(), streamSummary()), StreamSession.State.PREPARING, null);
 
         // we only update stats on ACK
         state.handleStreamEvent(new StreamEvent.SessionPreparedEvent(state.id(), s1, StreamSession.PrepareDirection.ACK));
@@ -186,7 +186,7 @@ public class StreamingVirtualTableTest extends CQLTester
             long fileSize = summary.totalSize / summary.files;
             for (int i = 0; i < summary.files - 1; i++)
             {
-                String fileName = summary.tableId + "-" + direction.name().toLowerCase() + "-" + i;
+                String fileName = summary.tableId + "-" + toLowerCaseLocalized(direction.name()) + "-" + i;
                 state.handleStreamEvent(new ProgressEvent(state.id(), new ProgressInfo((InetAddressAndPort) s.peer, 0, fileName, direction, fileSize, fileSize, fileSize)));
                 counter += fileSize;
             }
@@ -200,7 +200,7 @@ public class StreamingVirtualTableTest extends CQLTester
         for (StreamSummary summary : summaries)
         {
             long fileSize = summary.totalSize / summary.files;
-            String fileName = summary.tableId + "-" + direction.name().toLowerCase() + "-" + summary.files;
+            String fileName = summary.tableId + "-" + toLowerCaseLocalized(direction.name()) + "-" + summary.files;
             state.handleStreamEvent(new ProgressEvent(state.id(), new ProgressInfo((InetAddressAndPort) s.peer, 0, fileName, direction, fileSize, fileSize, fileSize)));
             counter += fileSize;
         }

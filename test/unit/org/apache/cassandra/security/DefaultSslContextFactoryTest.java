@@ -33,6 +33,13 @@ import io.netty.handler.ssl.OpenSslContext;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslProvider;
 import org.apache.cassandra.config.EncryptionOptions;
+import org.apache.cassandra.distributed.shared.WithProperties;
+import org.apache.cassandra.transport.TlsTestUtils;
+
+import static org.apache.cassandra.config.CassandraRelevantProperties.DISABLE_TCACTIVE_OPENSSL;
+
+import static org.apache.cassandra.config.EncryptionOptions.ClientAuth.NOT_REQUIRED;
+import static org.apache.cassandra.config.EncryptionOptions.ClientAuth.REQUIRED;
 
 public class DefaultSslContextFactoryTest
 {
@@ -41,36 +48,36 @@ public class DefaultSslContextFactoryTest
     @Before
     public void setup()
     {
-        commonConfig.put("truststore", "test/conf/cassandra_ssl_test.truststore");
-        commonConfig.put("truststore_password", "cassandra");
-        commonConfig.put("require_client_auth", Boolean.FALSE);
+        commonConfig.put("truststore", TlsTestUtils.SERVER_TRUSTSTORE_PATH);
+        commonConfig.put("truststore_password", TlsTestUtils.SERVER_TRUSTSTORE_PASSWORD);
+        commonConfig.put("require_client_auth", "false");
         commonConfig.put("cipher_suites", Arrays.asList("TLS_RSA_WITH_AES_128_CBC_SHA"));
     }
 
     private void addKeystoreOptions(Map<String,Object> config)
     {
-        config.put("keystore", "test/conf/cassandra_ssl_test.keystore");
-        config.put("keystore_password", "cassandra");
+        config.put("keystore", TlsTestUtils.SERVER_KEYSTORE_PATH);
+        config.put("keystore_password", TlsTestUtils.SERVER_KEYSTORE_PASSWORD);
     }
 
     private void addOutboundKeystoreOptions(Map<String, Object> config)
     {
-        config.put("outbound_keystore", "test/conf/cassandra_ssl_test_outbound.keystore");
-        config.put("outbound_keystore_password", "cassandra");
+        config.put("outbound_keystore", TlsTestUtils.SERVER_OUTBOUND_KEYSTORE_PATH);
+        config.put("outbound_keystore_password", TlsTestUtils.SERVER_OUTBOUND_KEYSTORE_PASSWORD);
     }
 
     @Test
     public void getSslContextOpenSSL() throws IOException
     {
-        EncryptionOptions.ServerEncryptionOptions options = new EncryptionOptions.ServerEncryptionOptions().withTrustStore("test/conf/cassandra_ssl_test.truststore")
-                                                                                                           .withTrustStorePassword("cassandra")
-                                                                                                           .withKeyStore("test/conf/cassandra_ssl_test.keystore")
-                                                                                                           .withKeyStorePassword("cassandra")
-                                                                                                           .withOutboundKeystore("test/conf/cassandra_ssl_test_outbound.keystore")
-                                                                                                           .withOutboundKeystorePassword("cassandra")
-                                                                                                           .withRequireClientAuth(false)
+        EncryptionOptions.ServerEncryptionOptions options = new EncryptionOptions.ServerEncryptionOptions().withTrustStore(TlsTestUtils.SERVER_TRUSTSTORE_PATH)
+                                                                                                           .withTrustStorePassword(TlsTestUtils.SERVER_TRUSTSTORE_PASSWORD)
+                                                                                                           .withKeyStore(TlsTestUtils.SERVER_KEYSTORE_PATH)
+                                                                                                           .withKeyStorePassword(TlsTestUtils.SERVER_KEYSTORE_PASSWORD)
+                                                                                                           .withOutboundKeystore(TlsTestUtils.SERVER_OUTBOUND_KEYSTORE_PATH)
+                                                                                                           .withOutboundKeystorePassword(TlsTestUtils.SERVER_OUTBOUND_KEYSTORE_PASSWORD)
+                                                                                                           .withRequireClientAuth(NOT_REQUIRED)
                                                                                                            .withCipherSuites("TLS_RSA_WITH_AES_128_CBC_SHA");
-        SslContext sslContext = SSLFactory.getOrCreateSslContext(options, true, ISslContextFactory.SocketType.CLIENT);
+        SslContext sslContext = SSLFactory.getOrCreateSslContext(options, REQUIRED, ISslContextFactory.SocketType.CLIENT, "test");
         Assert.assertNotNull(sslContext);
         if (OpenSsl.isAvailable())
             Assert.assertTrue(sslContext instanceof OpenSslContext);
@@ -120,6 +127,7 @@ public class DefaultSslContextFactoryTest
         Map<String,Object> config = new HashMap<>();
         config.putAll(commonConfig);
         config.put("keystore", "/this/is/probably/not/a/file/on/your/test/machine");
+        config.put("keystore_password", "ThisWontMatter");
 
         DefaultSslContextFactory defaultSslContextFactoryImpl = new DefaultSslContextFactory(config);
         defaultSslContextFactoryImpl.keystoreContext.checkedExpiry = false;
@@ -168,6 +176,7 @@ public class DefaultSslContextFactoryTest
         Map<String, Object> config = new HashMap<>();
         config.putAll(commonConfig);
         config.put("outbound_keystore", "/this/is/probably/not/a/file/on/your/test/machine");
+        config.put("outbound_keystore_password", "ThisWontMatter");
 
         DefaultSslContextFactory defaultSslContextFactoryImpl = new DefaultSslContextFactory(config);
         defaultSslContextFactoryImpl.outboundKeystoreContext.checkedExpiry = false;
@@ -183,7 +192,7 @@ public class DefaultSslContextFactoryTest
         config.put("outbound_keystore_password", "HomeOfBadPasswords");
 
         DefaultSslContextFactory defaultSslContextFactoryImpl = new DefaultSslContextFactory(config);
-        defaultSslContextFactoryImpl.buildKeyManagerFactory();
+        defaultSslContextFactoryImpl.buildOutboundKeyManagerFactory();
     }
 
     @Test
@@ -216,12 +225,13 @@ public class DefaultSslContextFactoryTest
     public void testDisableOpenSslForInJvmDtests() {
         // The configuration name below is hard-coded intentionally to make sure we don't break the contract without
         // changing the documentation appropriately
-        System.setProperty("cassandra.disable_tcactive_openssl","true");
-        Map<String,Object> config = new HashMap<>();
-        config.putAll(commonConfig);
+        try (WithProperties properties = new WithProperties().set(DISABLE_TCACTIVE_OPENSSL, true))
+        {
+            Map<String,Object> config = new HashMap<>();
+            config.putAll(commonConfig);
 
-        DefaultSslContextFactory defaultSslContextFactoryImpl = new DefaultSslContextFactory(config);
-        Assert.assertEquals(SslProvider.JDK, defaultSslContextFactoryImpl.getSslProvider());
-        System.clearProperty("cassandra.disable_tcactive_openssl");
+            DefaultSslContextFactory defaultSslContextFactoryImpl = new DefaultSslContextFactory(config);
+            Assert.assertEquals(SslProvider.JDK, defaultSslContextFactoryImpl.getSslProvider());
+        }
     }
 }

@@ -63,8 +63,7 @@ import org.apache.cassandra.dht.IncludingExcludingBounds;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.index.transactions.UpdateTransaction;
 import org.apache.cassandra.io.compress.BufferType;
-import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
-import org.apache.cassandra.metrics.TableMetrics;
+import org.apache.cassandra.io.sstable.SSTableReadsListener;
 import org.apache.cassandra.metrics.TrieMemtableMetricsView;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.schema.TableMetadataRef;
@@ -91,31 +90,14 @@ public class TrieMemtable extends AbstractShardedMemtable
     private static final Logger logger = LoggerFactory.getLogger(TrieMemtable.class);
 
     /** Buffer type to use for memtable tries (on- vs off-heap) */
-    public static final BufferType BUFFER_TYPE;
-
-    static
-    {
-        switch (DatabaseDescriptor.getMemtableAllocationType())
-        {
-        case unslabbed_heap_buffers:
-        case heap_buffers:
-            BUFFER_TYPE = BufferType.ON_HEAP;
-            break;
-        case offheap_buffers:
-        case offheap_objects:
-            BUFFER_TYPE = BufferType.OFF_HEAP;
-            break;
-        default:
-            throw new AssertionError();
-        }
-    }
+    public static final BufferType BUFFER_TYPE = DatabaseDescriptor.getMemtableAllocationType().toBufferType();
 
     /** If keys is below this length, we will use a recursive procedure for inserting data in the memtable trie. */
     @VisibleForTesting
     public static final int MAX_RECURSIVE_KEY_LENGTH = 128;
 
     /** The byte-ordering conversion version to use for memtables. */
-    public static final ByteComparable.Version BYTE_COMPARABLE_VERSION = ByteComparable.Version.OSS42;
+    public static final ByteComparable.Version BYTE_COMPARABLE_VERSION = ByteComparable.Version.OSS50;
 
     // Set to true when the memtable requests a switch (e.g. for trie size limit being reached) to ensure only one
     // thread calls cfs.switchMemtableIfCurrent.
@@ -270,11 +252,11 @@ public class TrieMemtable extends AbstractShardedMemtable
     }
 
     @Override
-    public int getMinLocalDeletionTime()
+    public long getMinLocalDeletionTime()
     {
-        int min = Integer.MAX_VALUE;
+        long min = Long.MAX_VALUE;
         for (MemtableShard shard : shards)
-            min =  Integer.min(min, shard.minLocalDeletionTime());
+            min =  Long.min(min, shard.minLocalDeletionTime());
         return min;
     }
 
@@ -428,7 +410,7 @@ public class TrieMemtable extends AbstractShardedMemtable
         // The smallest timestamp for all partitions stored in this shard
         private volatile long minTimestamp = Long.MAX_VALUE;
 
-        private volatile int minLocalDeletionTime = Integer.MAX_VALUE;
+        private volatile long minLocalDeletionTime = Long.MAX_VALUE;
 
         private volatile long liveDataSize = 0;
 
@@ -544,7 +526,7 @@ public class TrieMemtable extends AbstractShardedMemtable
             return currentOperations;
         }
 
-        int minLocalDeletionTime()
+        long minLocalDeletionTime()
         {
             return minLocalDeletionTime;
         }
@@ -696,10 +678,10 @@ public class TrieMemtable extends AbstractShardedMemtable
         }
 
         @Override
-        public TableMetrics.ReleasableMetric createMemtableMetrics(TableMetadataRef metadataRef)
+        public Runnable createMemtableMetricsReleaser(TableMetadataRef metadataRef)
         {
-            TrieMemtableMetricsView metrics = new TrieMemtableMetricsView(metadataRef.keyspace, metadataRef.name);
-            return metrics::release;
+            // Metrics are the same for all shards, so we can release them all at once.
+            return () -> TrieMemtableMetricsView.release(metadataRef.keyspace, metadataRef.name);
         }
 
         public boolean equals(Object o)

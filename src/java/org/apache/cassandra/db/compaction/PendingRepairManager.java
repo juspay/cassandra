@@ -264,7 +264,6 @@ class PendingRepairManager
         return tasks;
     }
 
-    @SuppressWarnings("resource")
     private RepairFinishedCompactionTask getRepairFinishedCompactionTask(TimeUUID sessionID)
     {
         Preconditions.checkState(canCleanup(sessionID));
@@ -272,7 +271,7 @@ class PendingRepairManager
         if (compactionStrategy == null)
             return null;
         Set<SSTableReader> sstables = compactionStrategy.getSSTables();
-        long repairedAt = ActiveRepairService.instance.consistent.local.getFinalSessionRepairedAt(sessionID);
+        long repairedAt = ActiveRepairService.instance().consistent.local.getFinalSessionRepairedAt(sessionID);
         LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.COMPACTION);
         return txn == null ? null : new RepairFinishedCompactionTask(cfs, txn, sessionID, repairedAt);
     }
@@ -365,7 +364,7 @@ class PendingRepairManager
         return null;
     }
 
-    synchronized AbstractCompactionTask getNextBackgroundTask(int gcBefore)
+    synchronized AbstractCompactionTask getNextBackgroundTask(long gcBefore)
     {
         if (strategies.isEmpty())
             return null;
@@ -392,7 +391,7 @@ class PendingRepairManager
         return get(sessionID).getNextBackgroundTask(gcBefore);
     }
 
-    synchronized Collection<AbstractCompactionTask> getMaximalTasks(int gcBefore, boolean splitOutput)
+    synchronized Collection<AbstractCompactionTask> getMaximalTasks(long gcBefore, boolean splitOutput)
     {
         if (strategies.isEmpty())
             return null;
@@ -426,10 +425,9 @@ class PendingRepairManager
 
     boolean canCleanup(TimeUUID sessionID)
     {
-        return !ActiveRepairService.instance.consistent.local.isSessionInProgress(sessionID);
+        return !ActiveRepairService.instance().consistent.local.isSessionInProgress(sessionID);
     }
 
-    @SuppressWarnings("resource")
     synchronized Set<ISSTableScanner> getScanners(Collection<SSTableReader> sstables, Collection<Range<Token>> ranges)
     {
         if (sstables.isEmpty())
@@ -467,7 +465,7 @@ class PendingRepairManager
 
     public synchronized boolean hasDataForSession(TimeUUID sessionID)
     {
-        return strategies.keySet().contains(sessionID);
+        return strategies.containsKey(sessionID);
     }
 
     boolean containsSSTable(SSTableReader sstable)
@@ -479,10 +477,19 @@ class PendingRepairManager
         return strategy != null && strategy.getSSTables().contains(sstable);
     }
 
-    public Collection<AbstractCompactionTask> createUserDefinedTasks(Collection<SSTableReader> sstables, int gcBefore)
+    public Collection<AbstractCompactionTask> createUserDefinedTasks(Collection<SSTableReader> sstables, long gcBefore)
     {
         Map<TimeUUID, List<SSTableReader>> group = sstables.stream().collect(Collectors.groupingBy(s -> s.getSSTableMetadata().pendingRepair));
         return group.entrySet().stream().map(g -> strategies.get(g.getKey()).getUserDefinedTask(g.getValue(), gcBefore)).collect(Collectors.toList());
+    }
+
+    @VisibleForTesting
+    public synchronized boolean hasPendingRepairSSTable(TimeUUID sessionID, SSTableReader sstable)
+    {
+        AbstractCompactionStrategy strat = strategies.get(sessionID);
+        if (strat == null)
+            return false;
+        return strat.getSSTables().contains(sstable);
     }
 
     /**

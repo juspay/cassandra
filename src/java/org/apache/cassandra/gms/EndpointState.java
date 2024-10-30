@@ -34,6 +34,7 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.tcm.ClusterMetadata;
 import org.apache.cassandra.utils.CassandraVersion;
 import org.apache.cassandra.utils.NullableSerializer;
 
@@ -69,10 +70,11 @@ public class EndpointState
         this(new HeartBeatState(other.hbState), new EnumMap<>(other.applicationState.get()));
     }
 
-    EndpointState(HeartBeatState initialHbState, Map<ApplicationState, VersionedValue> states)
+    @VisibleForTesting
+    public EndpointState(HeartBeatState initialHbState, Map<ApplicationState, VersionedValue> states)
     {
         hbState = initialHbState;
-        applicationState = new AtomicReference<Map<ApplicationState, VersionedValue>>(new EnumMap<>(states));
+        applicationState = new AtomicReference<>(new EnumMap<>(states));
         updateTimestamp = nanoTime();
         isAlive = true;
     }
@@ -184,19 +186,32 @@ public class EndpointState
         updateTimestamp = nanoTime();
     }
 
+    @VisibleForTesting
+    public void unsafeSetUpdateTimestamp(long value)
+    {
+        updateTimestamp = value;
+    }
+
     public boolean isAlive()
     {
         return isAlive;
     }
 
-    void markAlive()
+    @VisibleForTesting
+    public void markAlive()
     {
         isAlive = true;
     }
 
-    void markDead()
+    @VisibleForTesting
+    public void markDead()
     {
         isAlive = false;
+    }
+
+    public boolean isStateEmpty()
+    {
+        return applicationState.get().isEmpty();
     }
 
     /**
@@ -224,11 +239,6 @@ public class EndpointState
         return rpcState != null && Boolean.parseBoolean(rpcState.value);
     }
 
-    public boolean isNormalState()
-    {
-        return getStatus().equals(VersionedValue.STATUS_NORMAL);
-    }
-
     public String getStatus()
     {
         VersionedValue status = getApplicationState(ApplicationState.STATUS_WITH_PORT);
@@ -249,10 +259,7 @@ public class EndpointState
     @Nullable
     public UUID getSchemaVersion()
     {
-        VersionedValue applicationState = getApplicationState(ApplicationState.SCHEMA);
-        return applicationState != null
-               ? UUID.fromString(applicationState.value)
-               : null;
+        return ClusterMetadata.current().schema.getVersion();
     }
 
     @Nullable

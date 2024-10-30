@@ -27,14 +27,16 @@ import org.apache.cassandra.dht.ByteOrderedPartitioner;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.service.StorageService;
 
+import static org.apache.cassandra.ServerTestUtils.daemonInitialization;
+
 public class UserTypesTest extends CQLTester
 {
     @BeforeClass
     public static void setUpClass()     // overrides CQLTester.setUpClass()
     {
+        daemonInitialization();
         // Selecting partitioner for a table is not exposed on CREATE TABLE.
         StorageService.instance.setPartitionerUnsafe(ByteOrderedPartitioner.instance);
-
         prepareServer();
     }
 
@@ -133,6 +135,10 @@ public class UserTypesTest extends CQLTester
         assertInvalidMessage("A user type cannot contain non-frozen UDTs",
                 "CREATE TYPE " + KEYSPACE + ".wrong (a int, b " + myType + ")");
 
+        String ut1 = createType(KEYSPACE, "CREATE TYPE %s (a int)");
+        assertInvalidMessage("A user type cannot contain non-frozen UDTs",
+                "ALTER TYPE " + KEYSPACE + "." + ut1 + " ADD b " + myType);
+
         // referencing a UDT in another keyspace
         assertInvalidMessage("Statement on keyspace " + KEYSPACE + " cannot refer to a user type in keyspace otherkeyspace;" +
                              " user types can only be used in the keyspace they are defined in",
@@ -176,6 +182,11 @@ public class UserTypesTest extends CQLTester
         String myType2 = KEYSPACE + '.' + typename2;
         assertInvalidMessage("Non-frozen UDTs with nested non-frozen collections are not supported",
                 "CREATE TABLE " + KEYSPACE + ".wrong (k int PRIMARY KEY, v " + myType2 + ")");
+
+        String userType = createType("CREATE TYPE %s (userids SET<UUID>)");
+        createTable("CREATE TABLE %s (id int PRIMARY KEY)");
+        assertInvalidMessage("Non-frozen UDTs with nested non-frozen collections are not supported for column my_type",
+                             "alter TABLE %s add my_type " + userType);
     }
 
     @Test
@@ -525,6 +536,20 @@ public class UserTypesTest extends CQLTester
 
         // TODO: deserialize the value here and check it 's right.
         execute("SELECT addresses FROM %s WHERE id = ? ", userID_1);
+    }
+
+    @Test
+    public void testCreateTypeWithUndesiredFieldType() throws Throwable
+    {
+        String typeName = createTypeName();
+        assertInvalidMessage("A user type cannot contain counters", "CREATE TYPE " + typeWithKs(typeName) + " (f counter)");
+    }
+
+    @Test
+    public void testAlterTypeWithUndesiredFieldType() throws Throwable
+    {
+        String typeName = createType("CREATE TYPE %s (a int)");
+        assertInvalidMessage("A user type cannot contain counters", "ALTER TYPE " + typeWithKs(typeName) + " ADD f counter");
     }
 
     /**

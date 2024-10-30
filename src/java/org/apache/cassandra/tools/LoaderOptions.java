@@ -52,6 +52,7 @@ import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
 
 import static org.apache.cassandra.config.DataRateSpec.DataRateUnit.MEBIBYTES_PER_SECOND;
+import static org.apache.cassandra.config.EncryptionOptions.ClientAuth.REQUIRED;
 
 public class LoaderOptions
 {
@@ -62,7 +63,8 @@ public class LoaderOptions
     public static final String NOPROGRESS_OPTION = "no-progress";
     public static final String NATIVE_PORT_OPTION = "port";
     public static final String STORAGE_PORT_OPTION = "storage-port";
-    @Deprecated
+    /** @deprecated See CASSANDRA-17602 */
+    @Deprecated(since = "5.0")
     public static final String SSL_STORAGE_PORT_OPTION = "ssl-storage-port";
     public static final String USER_OPTION = "username";
     public static final String PASSWD_OPTION = "password";
@@ -77,15 +79,16 @@ public class LoaderOptions
      * provide options instead of using these constant fields.
      * @deprecated Use {@code throttle-mib} instead
      */
-    @Deprecated
+    /** @deprecated See CASSANDRA-17677 */
+    @Deprecated(since = "5.0")
     public static final String THROTTLE_MBITS = "throttle";
     public static final String THROTTLE_MEBIBYTES = "throttle-mib";
     /**
      * Inter-datacenter throttle defined in megabits per second. CASSANDRA-10637 introduced a builder and is the
      * preferred way to provide options instead of using these constant fields.
-     * @deprecated Use {@code inter-dc-throttle-mib} instead
+     * @deprecated Use {@code inter-dc-throttle-mib} instead. See CASSANDRA-17677
      */
-    @Deprecated
+    @Deprecated(since = "5.0")
     public static final String INTER_DC_THROTTLE_MBITS = "inter-dc-throttle";
     public static final String INTER_DC_THROTTLE_MEBIBYTES = "inter-dc-throttle-mib";
     public static final String ENTIRE_SSTABLE_THROTTLE_MEBIBYTES = "entire-sstable-throttle-mib";
@@ -261,7 +264,8 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
+        /** @deprecated See CASSANDRA-17677 */
+        @Deprecated(since = "5.0")
         public Builder throttle(int throttleMegabits)
         {
             this.throttleBytes = (long) DataRateSpec.LongBytesPerSecondBound.megabitsPerSecondInBytesPerSecond(throttleMegabits).toBytesPerSecond();
@@ -280,7 +284,8 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
+        /** @deprecated See CASSANDRA-17677 */
+        @Deprecated(since = "5.0")
         public Builder interDcThrottle(int interDcThrottle)
         {
             return interDcThrottleMegabits(interDcThrottle);
@@ -292,7 +297,8 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
+        /** @deprecated See CASSANDRA-17677 */
+        @Deprecated(since = "5.0")
         public Builder entireSSTableThrottle(int entireSSTableThrottle)
         {
             this.entireSSTableThrottleMebibytes = entireSSTableThrottle;
@@ -305,7 +311,8 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
+        /** @deprecated See CASSANDRA-17677 */
+        @Deprecated(since = "5.0")
         public Builder entireSSTableInterDcThrottle(int entireSSTableInterDcThrottle)
         {
             this.entireSSTableInterDcThrottleMebibytes = entireSSTableInterDcThrottle;
@@ -318,7 +325,8 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
+        /** @deprecated See CASSANDRA-17602 */
+        @Deprecated(since = "5.0")
         public Builder sslStoragePort(int sslStoragePort)
         {
             this.sslStoragePort = storagePort;
@@ -343,7 +351,8 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
+        /** @deprecated See CASSANDRA-7544 */
+        @Deprecated(since = "4.0")
         public Builder hosts(Set<InetAddress> hosts)
         {
             this.hostsArg.addAll(hosts);
@@ -547,16 +556,9 @@ public class LoaderOptions
                 serverEncOptions.applyConfig();
 
                 if (cmd.hasOption(NATIVE_PORT_OPTION))
-                {
                     nativePort = Integer.parseInt(cmd.getOptionValue(NATIVE_PORT_OPTION));
-                }
                 else
-                {
-                    if (config.native_transport_port_ssl != null && (config.client_encryption_options.getEnabled() || clientEncOptions.getEnabled()))
-                        nativePort = config.native_transport_port_ssl;
-                    else
-                        nativePort = config.native_transport_port;
-                }
+                    nativePort = config.native_transport_port;
 
                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
                 {
@@ -640,7 +642,7 @@ public class LoaderOptions
                 {
                     // if a keystore was provided, lets assume we'll need to use
                     clientEncOptions = clientEncOptions.withKeyStore(cmd.getOptionValue(SSL_KEYSTORE))
-                                                       .withRequireClientAuth(true);
+                                                       .withRequireClientAuth(REQUIRED);
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE_PW))

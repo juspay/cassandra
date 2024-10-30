@@ -24,6 +24,7 @@ import java.util.UUID;
 
 import org.junit.Test;
 
+import org.apache.cassandra.Util;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.validation.entities.SecondaryIndexTest;
 
@@ -722,6 +723,7 @@ public class CompactStorageSplit1Test extends CQLTester
     @Test
     public void testCompactTableWithValueOver64k() throws Throwable
     {
+        Util.assumeLegacySecondaryIndex();
         createTable("CREATE TABLE %s(a int, b blob, PRIMARY KEY (a)) WITH COMPACT STORAGE");
         createIndex("CREATE INDEX ON %s(b)");
         failInsert("INSERT INTO %s (a, b) VALUES (0, ?)", ByteBuffer.allocate(SecondaryIndexTest.TOO_BIG));
@@ -768,6 +770,7 @@ public class CompactStorageSplit1Test extends CQLTester
     @Test
     public void testEmptyRestrictionValueWithSecondaryIndexAndCompactTables() throws Throwable
     {
+        Util.assumeLegacySecondaryIndex();
         createTable("CREATE TABLE %s (pk blob, c blob, v blob, PRIMARY KEY ((pk), c)) WITH COMPACT STORAGE");
         assertInvalidMessage("Secondary indexes are not supported on PRIMARY KEY columns in COMPACT STORAGE tables",
                              "CREATE INDEX on %s(c)");
@@ -778,11 +781,11 @@ public class CompactStorageSplit1Test extends CQLTester
         execute("INSERT INTO %s (pk, v) VALUES (?, ?)", bytes("foo123"), bytes("1"));
 
         // Test restrictions on non-primary key value
-        assertEmpty(execute("SELECT * FROM %s WHERE pk = textAsBlob('foo123') AND v = textAsBlob('');"));
+        assertEmpty(execute("SELECT * FROM %s WHERE pk = text_as_blob('foo123') AND v = text_as_blob('');"));
 
         execute("INSERT INTO %s (pk, v) VALUES (?, ?)", bytes("foo124"), EMPTY_BYTE_BUFFER);
 
-        assertRows(execute("SELECT * FROM %s WHERE v = textAsBlob('');"),
+        assertRows(execute("SELECT * FROM %s WHERE v = text_as_blob('');"),
                    row(bytes("foo124"), EMPTY_BYTE_BUFFER));
     }
 
@@ -2145,7 +2148,7 @@ public class CompactStorageSplit1Test extends CQLTester
 
         assertEmpty(execute("select * from %s where a = ? and c > ? and c < ? and b in (?, ?)", "first", 6, 7, 3, 2));
 
-        assertInvalidMessage("Column \"c\" cannot be restricted by both an equality and an inequality relation",
+        assertInvalidMessage("c cannot be restricted by more than one relation if it includes an Equal",
                              "select * from %s where a = ? and c > ? and c = ? and b in (?, ?)", "first", 6, 7, 3, 2);
 
         assertInvalidMessage("c cannot be restricted by more than one relation if it includes an Equal",

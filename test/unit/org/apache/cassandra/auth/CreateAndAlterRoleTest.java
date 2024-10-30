@@ -18,13 +18,19 @@
 
 package org.apache.cassandra.auth;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.datastax.driver.core.exceptions.AuthenticationException;
-import org.apache.cassandra.Util;
+import com.datastax.driver.core.ResultSet;
+import com.datastax.driver.core.exceptions.InvalidQueryException;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mindrot.jbcrypt.BCrypt.gensalt;
 import static org.mindrot.jbcrypt.BCrypt.hashpw;
@@ -32,9 +38,12 @@ import static org.mindrot.jbcrypt.BCrypt.hashpw;
 public class CreateAndAlterRoleTest extends CQLTester
 {
     @BeforeClass
-    public static void setUpClass()
+    public static void setUpAuth()
     {
-        CQLTester.setUpClass();
+        DatabaseDescriptor.setPermissionsValidity(0);
+        DatabaseDescriptor.setRolesValidity(0);
+        DatabaseDescriptor.setCredentialsValidity(0);
+
         requireAuthentication();
         requireNetwork();
     }
@@ -62,11 +71,11 @@ public class CreateAndAlterRoleTest extends CQLTester
 
         useUser(user1, plainTextPwd);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
 
         useUser(user2, plainTextPwd);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
 
         useSuperUser();
 
@@ -78,11 +87,11 @@ public class CreateAndAlterRoleTest extends CQLTester
 
         useUser(user1, plainTextPwd2);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
 
         useUser(user2, plainTextPwd2);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
     }
 
     @Test
@@ -105,11 +114,11 @@ public class CreateAndAlterRoleTest extends CQLTester
 
         useUser(user1, plainTextPwd);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
 
         useUser(user2, plainTextPwd);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
 
         useSuperUser();
 
@@ -118,32 +127,41 @@ public class CreateAndAlterRoleTest extends CQLTester
 
         useUser(user1, plainTextPwd2);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
 
         useUser(user2, plainTextPwd2);
 
-        executeNetWithAuthSpin("SELECT key FROM system.local");
+        executeNet("SELECT key FROM system.local");
     }
 
-    /**
-     * Altering or creating auth may take some time to be effective
-     *
-     * @param query
-     */
-    void executeNetWithAuthSpin(String query)
+    @Test
+    public void createAlterRoleIfExists()
     {
-        Util.spinAssertEquals(true, () -> {
-            try
-            {
-                executeNet(query);
-                return true;
-            }
-            catch (Throwable e)
-            {
-                assertTrue("Unexpected exception: " + e, e instanceof AuthenticationException);
-                reinitializeNetwork();
-                return false;
-            }
-        }, 10);
+        useSuperUser();
+
+        executeNet("CREATE ROLE IF NOT EXISTS does_not_exist_yet");
+        assertTrue(getAllRoles().contains("does_not_exist_yet"));
+
+        // execute one more time
+        executeNet("CREATE ROLE IF NOT EXISTS does_not_exist_yet");
+
+        assertThatThrownBy(() -> executeNet("CREATE ROLE does_not_exist_yet"))
+        .isInstanceOf(InvalidQueryException.class)
+        .hasMessageContaining("does_not_exist_yet already exists");
+
+        // alter non-existing is no-op when "if exists" is specified
+        executeNet("ALTER ROLE IF EXISTS also_does_not_exist_yet WITH LOGIN = true");
+        Set<String> roles = getAllRoles();
+        assertTrue(roles.contains("does_not_exist_yet"));
+        // not created - CASSANDRA-19749
+        assertFalse(roles.contains("also_does_not_exist_yet"));
+    }
+
+    private Set<String> getAllRoles()
+    {
+        ResultSet rows = executeNet("SELECT role FROM system_auth.roles");
+        Set<String> roles = new HashSet<>();
+        rows.forEach(row -> roles.add(row.getString(0)));
+        return roles;
     }
 }

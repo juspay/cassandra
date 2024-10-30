@@ -32,7 +32,7 @@ import org.apache.cassandra.transport.ProtocolVersion;
 public interface PartitionRangeReadQuery extends ReadQuery
 {
     static ReadQuery create(TableMetadata table,
-                            int nowInSec,
+                            long nowInSec,
                             ColumnFilter columnFilter,
                             RowFilter rowFilter,
                             DataLimits limits,
@@ -40,8 +40,6 @@ public interface PartitionRangeReadQuery extends ReadQuery
     {
         return PartitionRangeReadCommand.create(table, nowInSec, columnFilter, rowFilter, limits, dataRange);
     }
-
-    DataRange dataRange();
 
     /**
      * Creates a new {@code PartitionRangeReadQuery} with the updated limits.

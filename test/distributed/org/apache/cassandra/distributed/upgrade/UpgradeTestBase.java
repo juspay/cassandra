@@ -30,19 +30,18 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import com.vdurmont.semver4j.Semver;
-import com.vdurmont.semver4j.Semver.SemverType;
-
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.BeforeClass;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.vdurmont.semver4j.Semver;
+import com.vdurmont.semver4j.Semver.SemverType;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.distributed.UpgradeableCluster;
+import org.apache.cassandra.distributed.api.Feature;
 import org.apache.cassandra.distributed.api.ICluster;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.distributed.shared.DistributedTestBase;
@@ -51,10 +50,12 @@ import org.apache.cassandra.distributed.shared.Versions;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.SimpleGraph;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.SKIP_GC_INSPECTOR;
 import static org.apache.cassandra.distributed.shared.Versions.Version;
 import static org.apache.cassandra.distributed.shared.Versions.find;
 import static org.apache.cassandra.utils.SimpleGraph.sortedVertices;
 
+// checkstyle: suppress below 'blockSystemPropertyUsage'
 public class UpgradeTestBase extends DistributedTestBase
 {
     private static final Logger logger = LoggerFactory.getLogger(UpgradeTestBase.class);
@@ -69,6 +70,7 @@ public class UpgradeTestBase extends DistributedTestBase
     public static void beforeClass() throws Throwable
     {
         ICluster.setup();
+        SKIP_GC_INSPECTOR.setBoolean(true);
     }
 
 
@@ -92,18 +94,21 @@ public class UpgradeTestBase extends DistributedTestBase
     public static final Semver v40 = new Semver("4.0-alpha1", SemverType.LOOSE);
     public static final Semver v41 = new Semver("4.1-alpha1", SemverType.LOOSE);
     public static final Semver v42 = new Semver("4.2-alpha1", SemverType.LOOSE);
+    public static final Semver v50 = new Semver("5.0-alpha1", SemverType.LOOSE);
+    public static final Semver v51 = new Semver("5.1-alpha1", SemverType.LOOSE);
 
     protected static final SimpleGraph<Semver> SUPPORTED_UPGRADE_PATHS = new SimpleGraph.Builder<Semver>()
                                                                          .addEdge(v30, v3X)
                                                                          .addEdge(v30, v40)
                                                                          .addEdge(v30, v41)
-                                                                         .addEdge(v30, v42)
                                                                          .addEdge(v3X, v40)
                                                                          .addEdge(v3X, v41)
-                                                                         .addEdge(v3X, v42)
                                                                          .addEdge(v40, v41)
-                                                                         .addEdge(v40, v42)
-                                                                         .addEdge(v41, v42)
+                                                                         .addEdge(v40, v50)
+                                                                         .addEdge(v40, v51)
+                                                                         .addEdge(v41, v50)
+                                                                         .addEdge(v41, v51)
+                                                                         .addEdge(v50, v51)
                                                                          .build();
 
     // the last is always the current
@@ -161,6 +166,18 @@ public class UpgradeTestBase extends DistributedTestBase
         private final Set<Integer> nodesToUpgrade = new LinkedHashSet<>();
         private Consumer<IInstanceConfig> configConsumer;
         private Consumer<UpgradeableCluster.Builder> builderConsumer;
+        private UpgradeListener upgradeListener = new UpgradeListener()
+        {
+            @Override
+            public void shutdown(int i)
+            {
+            }
+
+            @Override
+            public void startup(int i)
+            {
+            }
+        };
 
         public TestCase()
         {
@@ -178,24 +195,26 @@ public class UpgradeTestBase extends DistributedTestBase
             return this;
         }
 
-        /** performs all supported upgrade paths that exist in between from and CURRENT (inclusive) **/
-        public TestCase upgradesToCurrentFrom(Semver from)
+        /** performs all supported upgrade paths that exist in between lowerBound and end on CURRENT (inclusive)
+         * {@code upgradesToCurrentFrom(3.0); // produces: 3.0 -> CURRENT, 3.11 -> CURRENT, …}
+         **/
+        public TestCase upgradesToCurrentFrom(Semver lowerBound)
         {
-            return upgradesTo(from, CURRENT);
+            return upgradesTo(lowerBound, CURRENT);
         }
 
         /**
          * performs all supported upgrade paths to the "to" target; example
          * {@code upgradesTo(3.0, 4.0); // produces: 3.0 -> 4.0, 3.11 -> 4.0}
          */
-        public TestCase upgradesTo(Semver from, Semver to)
+        public TestCase upgradesTo(Semver lowerBound, Semver to)
         {
             List<TestVersions> upgrade = new ArrayList<>();
             NavigableSet<Semver> vertices = sortedVertices(SUPPORTED_UPGRADE_PATHS);
-            for (Semver start : vertices.subSet(from, true, to, false))
+            for (Semver start : vertices.subSet(lowerBound, true, to, false))
             {
-                // only include pairs that are allowed
-                if (SUPPORTED_UPGRADE_PATHS.hasEdge(start, to))
+                // only include pairs that are allowed, and start or end on CURRENT
+                if (SUPPORTED_UPGRADE_PATHS.hasEdge(start, to) && edgeTouchesTarget(start, to, CURRENT))
                     upgrade.add(new TestVersions(versions.getLatest(start), Collections.singletonList(versions.getLatest(to))));
             }
             logger.info("Adding upgrades of\n{}", upgrade.stream().map(TestVersions::toString).collect(Collectors.joining("\n")));
@@ -207,14 +226,14 @@ public class UpgradeTestBase extends DistributedTestBase
          * performs all supported upgrade paths from the "from" target; example
          * {@code upgradesFrom(4.0, 4.2); // produces: 4.0 -> 4.1, 4.0 -> 4.2}
          */
-        public TestCase upgradesFrom(Semver from, Semver to)
+        public TestCase upgradesFrom(Semver from, Semver upperBound)
         {
             List<TestVersions> upgrade = new ArrayList<>();
             NavigableSet<Semver> vertices = sortedVertices(SUPPORTED_UPGRADE_PATHS);
-            for (Semver end : vertices.subSet(from, false, to, true))
+            for (Semver end : vertices.subSet(from, false, upperBound, true))
             {
-                // only include pairs that are allowed
-                if (SUPPORTED_UPGRADE_PATHS.hasEdge(from, end))
+                // only include pairs that are allowed, and start or end on CURRENT
+                if (SUPPORTED_UPGRADE_PATHS.hasEdge(from, end) && edgeTouchesTarget(from, end, CURRENT))
                     upgrade.add(new TestVersions(versions.getLatest(from), Collections.singletonList(versions.getLatest(end))));
             }
             logger.info("Adding upgrades of\n{}", upgrade.stream().map(TestVersions::toString).collect(Collectors.joining("\n")));
@@ -224,22 +243,43 @@ public class UpgradeTestBase extends DistributedTestBase
 
         /**
          * performs all supported upgrade paths that exist in between from and to that include the current version.
-         * This call is equivilent to calling {@code upgradesTo(from, CURRENT).upgradesFrom(CURRENT, to)}.
+         * This call is equivalent to calling {@code upgradesTo(from, CURRENT).upgradesFrom(CURRENT, to)}.
          **/
-        public TestCase upgrades(Semver from, Semver to)
+        public TestCase upgrades(Semver lowerBound, Semver upperBound)
         {
-            Assume.assumeTrue("Unable to do upgrades(" + from + ", " + to + "); does not contain CURRENT=" + CURRENT, contains(from, to, CURRENT));
-            if (from.compareTo(CURRENT) < 0)
-                upgradesTo(from, CURRENT);
-            if (CURRENT.compareTo(to) < 0)
-                upgradesFrom(CURRENT, to);
+            Assume.assumeTrue("Unable to do any upgrades in bounds (" + lowerBound + ", " + upperBound + "); does not cover CURRENT=" + CURRENT, rangeCoversTarget(lowerBound, upperBound, CURRENT));
+            if (lowerBound.compareTo(CURRENT) < 0)
+                upgradesTo(lowerBound, CURRENT);
+            if (CURRENT.compareTo(upperBound) < 0)
+                upgradesFrom(CURRENT, upperBound);
             return this;
         }
 
-        private static boolean contains(Semver from, Semver to, Semver target)
+        private static boolean rangeCoversTarget(Semver lowerBound, Semver upperBound, Semver target)
         {
             // target >= from && target <= to
-            return target.compareTo(from) >= 0 && target.compareTo(to) <= 0;
+            return target.isGreaterThanOrEqualTo(lowerBound) && target.isLowerThanOrEqualTo(upperBound);
+        }
+
+        /** returns true if the target version has the same major and minor as either the from or the to version **/
+        private static boolean edgeTouchesTarget(Semver from, Semver to, Semver target)
+        {
+            switch (from.diff(target))
+            {
+                default:
+                    return true;
+                case MAJOR:
+                case MINOR:
+                    // fall through
+            }
+            switch (to.diff(target))
+            {
+                default:
+                    return true;
+                case MAJOR:
+                case MINOR:
+                    return false;
+            }
         }
 
         /** Will test this specific upgrade path **/
@@ -295,6 +335,12 @@ public class UpgradeTestBase extends DistributedTestBase
             return this;
         }
 
+        public TestCase withUpgradeListener(UpgradeListener listener)
+        {
+            this.upgradeListener = listener;
+            return this;
+        }
+
         public void run() throws Throwable
         {
             if (setup == null)
@@ -331,11 +377,13 @@ public class UpgradeTestBase extends DistributedTestBase
 
                             for (int n : nodesToUpgrade)
                             {
+                                upgradeListener.shutdown(n);
                                 cluster.get(n).shutdown().get();
                                 triggerGC();
                                 cluster.get(n).setVersion(nextVersion);
                                 runBeforeNodeRestart.run(cluster, n);
                                 cluster.get(n).startup();
+                                upgradeListener.startup(n);
                                 runAfterNodeUpgrade.run(cluster, n);
                             }
 
@@ -384,6 +432,7 @@ public class UpgradeTestBase extends DistributedTestBase
     {
         return new TestCase().nodes(nodes)
                              .upgradesToCurrentFrom(v30)
+                             .withConfig(c -> c.with(Feature.GOSSIP))
                              .nodesToUpgrade(toUpgrade);
     }
 
@@ -413,5 +462,11 @@ public class UpgradeTestBase extends DistributedTestBase
     protected static int nextNode(int current, int numNodes)
     {
         return current == numNodes ? 1 : current + 1;
+    }
+
+    public interface UpgradeListener
+    {
+        void shutdown(int i);
+        void startup(int i);
     }
 }

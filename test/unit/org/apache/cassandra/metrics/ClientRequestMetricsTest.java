@@ -24,6 +24,7 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import com.codahale.metrics.Histogram;
 import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
@@ -33,8 +34,12 @@ import org.apache.cassandra.ServerTestUtils;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.service.EmbeddedCassandraService;
+import org.apache.cassandra.service.reads.range.RangeCommandIterator;
 
 import static com.datastax.driver.core.Cluster.builder;
+import static org.apache.cassandra.cql3.CQLTester.assertRowsContains;
+import static org.apache.cassandra.cql3.CQLTester.row;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 
 public class ClientRequestMetricsTest
@@ -95,6 +100,8 @@ public class ClientRequestMetricsTest
 
         assertEquals(0, readMetricsContainer.compareLocalRequest());
         assertEquals(0, readMetricsContainer.compareRemoteRequest());
+
+        assertMetricsVirtualTable(writeMetricsContainer, readMetricsContainer);
     }
 
     @Test
@@ -110,6 +117,8 @@ public class ClientRequestMetricsTest
 
         assertEquals(1, writeMetricsContainer.compareLocalRequest());
         assertEquals(0, writeMetricsContainer.compareRemoteRequest());
+
+        assertMetricsVirtualTable(writeMetricsContainer, readMetricsContainer);
     }
 
     @Test
@@ -125,6 +134,8 @@ public class ClientRequestMetricsTest
 
         assertEquals(10, writeMetricsContainer.compareLocalRequest());
         assertEquals(0, writeMetricsContainer.compareRemoteRequest());
+
+        assertMetricsVirtualTable(writeMetricsContainer, readMetricsContainer);
     }
 
     @Test
@@ -142,6 +153,8 @@ public class ClientRequestMetricsTest
 
         assertEquals(0, writeMetricsContainer.compareLocalRequest());
         assertEquals(0, writeMetricsContainer.compareRemoteRequest());
+
+        assertMetricsVirtualTable(writeMetricsContainer, readMetricsContainer);
     }
 
     @Test
@@ -159,8 +172,40 @@ public class ClientRequestMetricsTest
 
         assertEquals(0, writeMetricsContainer.compareLocalRequest());
         assertEquals(0, writeMetricsContainer.compareRemoteRequest());
+
+        assertMetricsVirtualTable(writeMetricsContainer, readMetricsContainer);
     }
 
+    @Test
+    public void testRangeRead() throws Throwable
+    {
+        clearHistogram(RangeCommandIterator.rangeMetrics.roundTrips);
+        long latencyCount = RangeCommandIterator.rangeMetrics.latency.getCount();
+
+        session.execute("SELECT * FROM system.peers");
+
+        assertThat(RangeCommandIterator.rangeMetrics.roundTrips.getCount()).isGreaterThan(0);
+        assertThat(RangeCommandIterator.rangeMetrics.roundTrips.getSnapshot().getMax()).isEqualTo(1);
+        assertThat(RangeCommandIterator.rangeMetrics.latency.getCount()).isEqualTo(latencyCount + 1);
+    }
+
+    private void assertMetricsVirtualTable(ClientRequestMetricsContainer writeMetricsContainer, ClientRequestMetricsContainer readMetricsContainer)
+    {
+        assertRowsContains(cluster, session.execute("SELECT * FROM system_metrics.client_request_group"),
+                row("org.apache.cassandra.metrics.ClientRequest.LocalRequests.Read", "Read", "meter",
+                        String.valueOf(readMetricsContainer.getMetrics().localRequests.getCount())),
+                row("org.apache.cassandra.metrics.ClientRequest.LocalRequests.Write", "Write", "meter",
+                        String.valueOf(writeMetricsContainer.getMetrics().localRequests.getCount())),
+                row("org.apache.cassandra.metrics.ClientRequest.RemoteRequests.Read", "Read", "meter",
+                        String.valueOf(readMetricsContainer.getMetrics().remoteRequests.getCount())),
+                row("org.apache.cassandra.metrics.ClientRequest.RemoteRequests.Write", "Write", "meter",
+                        String.valueOf(writeMetricsContainer.getMetrics().remoteRequests.getCount())));
+    }
+
+    private void clearHistogram(Histogram histogram)
+    {
+        ((ClearableHistogram) histogram).clear();
+    }
 
     private static class ClientRequestMetricsContainer
     {
@@ -184,6 +229,11 @@ public class ClientRequestMetricsTest
         public long compareRemoteRequest()
         {
             return metrics.remoteRequests.getCount() - remoteRequests;
+        }
+
+        public ClientRequestMetrics getMetrics()
+        {
+            return metrics;
         }
     }
 

@@ -18,7 +18,10 @@
 
 package org.apache.cassandra.distributed.test;
 
+import java.net.InetSocketAddress;
+
 import org.apache.cassandra.distributed.Cluster;
+import org.apache.cassandra.distributed.api.IInstance;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.distributed.api.IInvokableInstance;
 import org.apache.cassandra.distributed.api.IIsolatedExecutor;
@@ -33,7 +36,9 @@ import com.datastax.driver.core.SimpleStatement;
 import com.datastax.driver.core.Statement;
 import org.apache.cassandra.distributed.api.ICluster;
 import org.apache.cassandra.distributed.impl.RowUtil;
+import org.apache.cassandra.utils.FBUtilities;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.JOIN_RING;
 import static org.apache.cassandra.distributed.action.GossipHelper.withProperty;
 import static org.apache.cassandra.distributed.api.Feature.GOSSIP;
 import static org.apache.cassandra.distributed.api.Feature.NATIVE_PROTOCOL;
@@ -51,21 +56,27 @@ public class NativeProtocolTest extends TestBaseImpl
     @Test
     public void withClientRequests() throws Throwable
     {
-        try (ICluster ignored = init(builder().withNodes(3)
+        try (ICluster cluster = init(builder().withNodes(3)
                                               .withConfig(config -> config.with(GOSSIP, NETWORK, NATIVE_PROTOCOL))
                                               .start()))
         {
+            testNativeRequests(cluster);
+        }
+    }
 
-            try (com.datastax.driver.core.Cluster cluster = com.datastax.driver.core.Cluster.builder().addContactPoint("127.0.0.1").build();
-                 Session session = cluster.connect())
-            {
-                session.execute("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck));");
-                session.execute("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) values (1,1,1);");
-                Statement select = new SimpleStatement("select * from " + KEYSPACE + ".tbl;").setConsistencyLevel(ConsistencyLevel.ALL);
-                final ResultSet resultSet = session.execute(select);
-                assertRows(RowUtil.toObjects(resultSet), row(1, 1, 1));
-                Assert.assertEquals(3, cluster.getMetadata().getAllHosts().size());
-            }
+    public static void testNativeRequests(ICluster dtestCluster)
+    {
+        IInstance inst = dtestCluster.get(1);
+        final InetSocketAddress host = inst.broadcastAddress();
+        try (com.datastax.driver.core.Cluster cluster = com.datastax.driver.core.Cluster.builder().addContactPoint("127.0.0.1").build();
+             Session session = cluster.connect())
+        {
+            session.execute("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck));");
+            session.execute("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) values (1,1,1);");
+            Statement select = new SimpleStatement("select * from " + KEYSPACE + ".tbl;").setConsistencyLevel(ConsistencyLevel.ALL);
+            final ResultSet resultSet = session.execute(select);
+            assertRows(RowUtil.toObjects(resultSet), row(1, 1, 1));
+            Assert.assertEquals(dtestCluster.size(), cluster.getMetadata().getAllHosts().size());
         }
     }
 
@@ -103,7 +114,7 @@ public class NativeProtocolTest extends TestBaseImpl
         {
             IInstanceConfig config = cluster.newInstanceConfig();
             IInvokableInstance gossippingOnlyMember = cluster.bootstrap(config);
-            withProperty("cassandra.join_ring", Boolean.toString(false), () -> gossippingOnlyMember.startup(cluster));
+            withProperty(JOIN_RING, false, () -> gossippingOnlyMember.startup(cluster));
 
             assertTrue(gossippingOnlyMember.callOnInstance((IIsolatedExecutor.SerializableCallable<Boolean>)
                                                            () -> StorageService.instance.isNativeTransportRunning()));
@@ -119,4 +130,30 @@ public class NativeProtocolTest extends TestBaseImpl
                                                            () -> StorageService.instance.isNativeTransportRunning()));
         }
     }
+
+    @Test
+    public void testBinaryReflectsRpcReadiness() throws Throwable
+    {
+        try (Cluster cluster = builder().withNodes(1)
+                                        .withConfig(config -> config.with(NETWORK, GOSSIP, NATIVE_PROTOCOL)
+                                                                    .set("start_native_transport", "false"))
+                                        .start())
+        {
+            IInvokableInstance i = cluster.get(1);
+
+            // rpc is false when native transport is not enabled
+            assertFalse(i.callOnInstance((IIsolatedExecutor.SerializableCallable<Boolean>) () -> StorageService.instance.isNativeTransportRunning()));
+            assertFalse(i.callOnInstance((IIsolatedExecutor.SerializableCallable<Boolean>) () -> StorageService.instance.isRpcReady(FBUtilities.getBroadcastAddressAndPort())));
+
+            // but if we enable it, e.g. by nodetool enablebinary, rpc will be enabled
+            i.runOnInstance((IIsolatedExecutor.SerializableRunnable) () -> StorageService.instance.startNativeTransport());
+            assertTrue(i.callOnInstance((IIsolatedExecutor.SerializableCallable<Boolean>) () -> StorageService.instance.isRpcReady(FBUtilities.getBroadcastAddressAndPort())));
+
+            // by calling e.g. nodetool disablebinary, rpc will NOT be set to false again
+            // please read CASSANDRA-18935 for in-depth explanation why it is so
+            i.runOnInstance((IIsolatedExecutor.SerializableRunnable) () -> StorageService.instance.stopNativeTransport());
+            assertTrue(i.callOnInstance((IIsolatedExecutor.SerializableCallable<Boolean>) () -> StorageService.instance.isRpcReady(FBUtilities.getBroadcastAddressAndPort())));
+        }
+    }
 }
+

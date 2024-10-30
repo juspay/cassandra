@@ -21,8 +21,8 @@ package org.apache.cassandra.simulator;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import java.nio.file.FileSystem;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -35,14 +35,13 @@ import java.util.function.LongConsumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-import com.google.common.jimfs.Configuration;
-import com.google.common.jimfs.Jimfs;
 import com.google.common.util.concurrent.AsyncFunction;
 import com.google.common.util.concurrent.FutureCallback;
 
 import org.apache.cassandra.concurrent.ExecutorFactory;
 import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.distributed.Cluster;
+import org.apache.cassandra.distributed.Constants;
 import org.apache.cassandra.distributed.api.Feature;
 import org.apache.cassandra.distributed.api.IInstance;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
@@ -53,8 +52,13 @@ import org.apache.cassandra.distributed.api.IIsolatedExecutor.SerializableBiCons
 import org.apache.cassandra.distributed.api.IIsolatedExecutor.SerializableConsumer;
 import org.apache.cassandra.distributed.api.IIsolatedExecutor.SerializableRunnable;
 import org.apache.cassandra.distributed.impl.DirectStreamingConnectionFactory;
+import org.apache.cassandra.distributed.impl.InstanceConfig;
+import org.apache.cassandra.distributed.impl.InstanceIDDefiner;
 import org.apache.cassandra.distributed.impl.IsolatedExecutor;
 import org.apache.cassandra.io.compress.LZ4Compressor;
+import org.apache.cassandra.io.filesystem.ListenableFileSystem;
+import org.apache.cassandra.io.util.FileSystems;
+import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.service.paxos.BallotGenerator;
 import org.apache.cassandra.service.paxos.PaxosPrepare;
 import org.apache.cassandra.simulator.RandomSource.Choices;
@@ -65,21 +69,21 @@ import org.apache.cassandra.simulator.cluster.ClusterActions.TopologyChange;
 import org.apache.cassandra.simulator.systems.Failures;
 import org.apache.cassandra.simulator.systems.InterceptedWait.CaptureSites.Capture;
 import org.apache.cassandra.simulator.systems.InterceptibleThread;
+import org.apache.cassandra.simulator.systems.InterceptingExecutorFactory;
 import org.apache.cassandra.simulator.systems.InterceptingGlobalMethods;
 import org.apache.cassandra.simulator.systems.InterceptingGlobalMethods.ThreadLocalRandomCheck;
 import org.apache.cassandra.simulator.systems.InterceptorOfGlobalMethods;
-import org.apache.cassandra.simulator.systems.InterceptingExecutorFactory;
 import org.apache.cassandra.simulator.systems.InterceptorOfGlobalMethods.IfInterceptibleThread;
 import org.apache.cassandra.simulator.systems.NetworkConfig;
 import org.apache.cassandra.simulator.systems.NetworkConfig.PhaseConfig;
 import org.apache.cassandra.simulator.systems.SchedulerConfig;
-import org.apache.cassandra.simulator.systems.SimulatedFutureActionScheduler;
-import org.apache.cassandra.simulator.systems.SimulatedSystems;
 import org.apache.cassandra.simulator.systems.SimulatedBallots;
 import org.apache.cassandra.simulator.systems.SimulatedExecution;
 import org.apache.cassandra.simulator.systems.SimulatedFailureDetector;
+import org.apache.cassandra.simulator.systems.SimulatedFutureActionScheduler;
 import org.apache.cassandra.simulator.systems.SimulatedMessageDelivery;
 import org.apache.cassandra.simulator.systems.SimulatedSnitch;
+import org.apache.cassandra.simulator.systems.SimulatedSystems;
 import org.apache.cassandra.simulator.systems.SimulatedTime;
 import org.apache.cassandra.simulator.utils.ChanceRange;
 import org.apache.cassandra.simulator.utils.IntRange;
@@ -117,7 +121,8 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
                                             FutureCallback.class,
                                             io.netty.util.concurrent.GenericFutureListener.class,
                                             io.netty.channel.FileRegion.class,
-                                            io.netty.util.ReferenceCounted.class
+                                            io.netty.util.ReferenceCounted.class,
+                                            io.netty.util.concurrent.FastThreadLocal.class
                                         };
 
     public static final Class<?>[] ISOLATE = new Class<?>[0];
@@ -182,10 +187,35 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
         protected SchedulerFactory schedulerFactory = schedulerFactory(RunnableActionScheduler.Kind.values());
 
         protected Debug debug = new Debug();
+        protected Failures failures = new Failures();
         protected Capture capture = new Capture(false, false, false);
         protected HeapPool.Logged.Listener memoryListener;
         protected SimulatedTime.Listener timeListener = (i1, i2) -> {};
         protected LongConsumer onThreadLocalRandomCheck;
+
+        public Builder<S> failures(Failures failures)
+        {
+            this.failures = failures;
+            return this;
+        }
+
+        public Builder<S> writeTimeoutNanos(long nanos)
+        {
+            this.writeTimeoutNanos = nanos;
+            return this;
+        }
+
+        public Builder<S> readTimeoutNanos(long nanos)
+        {
+            this.readTimeoutNanos = nanos;
+            return this;
+        }
+
+        public Builder<S> requestTimeoutNanos(long nanos)
+        {
+            this.requestTimeoutNanos = nanos;
+            return this;
+        }
 
         public Debug debug()
         {
@@ -449,7 +479,7 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
             return this;
         }
 
-        public SimulatedFutureActionScheduler futureActionScheduler(int nodeCount, SimulatedTime time, RandomSource random)
+        public FutureActionScheduler futureActionScheduler(int nodeCount, SimulatedTime time, RandomSource random)
         {
             KindOfSequence kind = Choices.random(random, KindOfSequence.values())
                                          .choose(random);
@@ -460,12 +490,18 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
                                                       new SchedulerConfig(schedulerDelayChance, schedulerDelayNanos, schedulerLongDelayNanos));
         }
 
+        public Map<Verb, FutureActionScheduler> perVerbFutureActionSchedulers(int nodeCount, SimulatedTime time, RandomSource random)
+        {
+            return Collections.emptyMap();
+        }
+
         static SchedulerFactory schedulerFactory(RunnableActionScheduler.Kind... kinds)
         {
             return (random) -> {
                 switch (Choices.random(random, kinds).choose(random))
                 {
                     default: throw new AssertionError();
+                    case IMMEDIATE: return new RunnableActionScheduler.Immediate();
                     case SEQUENTIAL: return new RunnableActionScheduler.Sequential();
                     case UNIFORM: return new RunnableActionScheduler.RandomUniform(random);
                     case RANDOM_WALK: return new RunnableActionScheduler.RandomWalk(random);
@@ -606,11 +642,14 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
     public final RandomSource random;
     public final SimulatedSystems simulated;
     public final Cluster cluster;
-    public final S simulation;
-    private final FileSystem jimfs;
+    private final ListenableFileSystem fs;
     protected final Map<Integer, List<Closeable>> onUnexpectedShutdown = new TreeMap<>();
     protected final List<Callable<Void>> onShutdown = new CopyOnWriteArrayList<>();
     protected final ThreadLocalRandomCheck threadLocalRandomCheck;
+
+    private final RunnableActionScheduler scheduler;
+    private final ClusterActions.Options options;
+    private final SimulationFactory<S> factory;
 
     public ClusterSimulation(RandomSource random, long seed, int uniqueNum,
                              Builder<?> builder,
@@ -618,9 +657,7 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
                              SimulationFactory<S> factory) throws IOException
     {
         this.random = random;
-        this.jimfs  = Jimfs.newFileSystem(Long.toHexString(seed) + 'x' + uniqueNum, Configuration.unix().toBuilder()
-                                                                               .setMaxSize(4L << 30).setBlockSize(512)
-                                                                               .build());
+        this.fs = new ListenableFileSystem(FileSystems.jimfs(Long.toHexString(seed) + 'x' + uniqueNum));
 
         final SimulatedMessageDelivery delivery;
         final SimulatedExecution execution;
@@ -668,31 +705,46 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
         InterceptAsClassTransformer interceptClasses = new InterceptAsClassTransformer(builder.monitorDelayChance.asSupplier(random), builder.nemesisChance.asSupplier(random), NemesisFieldSelectors.get(), ClassLoader.getSystemClassLoader(), sharedClassPredicate.negate());
         threadLocalRandomCheck = new ThreadLocalRandomCheck(builder.onThreadLocalRandomCheck);
 
-        Failures failures = new Failures();
+        Failures failures = builder.failures;
         ThreadAllocator threadAllocator = new ThreadAllocator(random, builder.threadCount, numOfNodes);
+
         cluster = snitch.setup(Cluster.build(numOfNodes)
-                         .withRoot(jimfs.getPath("/cassandra"))
+                         .withRoot(fs.getPath("/cassandra"))
                          .withSharedClasses(sharedClassPredicate)
-                         .withConfig(config -> configUpdater.accept(threadAllocator.update(config
-                             .with(Feature.BLANK_GOSSIP)
-                             .set("read_request_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.readTimeoutNanos)))
-                             .set("write_request_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.writeTimeoutNanos)))
-                             .set("cas_contention_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.contentionTimeoutNanos)))
-                             .set("request_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.requestTimeoutNanos)))
-                             .set("memtable_heap_space", "1MiB")
-                             .set("memtable_allocation_type", builder.memoryListener != null ? "unslabbed_heap_buffers_logged" : "heap_buffers")
-                             .set("file_cache_size", "16MiB")
-                             .set("use_deterministic_table_id", true)
-                             .set("disk_access_mode", "standard")
-                             .set("failure_detector", SimulatedFailureDetector.Instance.class.getName())
-                             .set("commitlog_compression", new ParameterizedClass(LZ4Compressor.class.getName(), emptyMap()))
-                         )))
+                         .withConfig(config -> {
+                             config.with(Feature.BLANK_GOSSIP)
+                                   .set(Constants.KEY_DTEST_JOIN_RING, false)
+                                   .set("read_request_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.readTimeoutNanos)))
+                                   .set("write_request_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.writeTimeoutNanos)))
+                                   .set("cas_contention_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.contentionTimeoutNanos)))
+                                   .set("request_timeout", String.format("%dms", NANOSECONDS.toMillis(builder.requestTimeoutNanos)))
+                                   .set("memtable_heap_space", "1MiB")
+                                   .set("memtable_allocation_type", builder.memoryListener != null ? "unslabbed_heap_buffers_logged" : "heap_buffers")
+                                   .set("file_cache_size", "16MiB")
+                                   .set("use_deterministic_table_id", true)
+                                   .set("disk_access_mode", "standard")
+                                   .set("failure_detector", SimulatedFailureDetector.Instance.class.getName())
+                                   .set("commitlog_compression", new ParameterizedClass(LZ4Compressor.class.getName(), emptyMap()))
+                                   .set("commitlog_sync", "batch");
+
+                             // TODO: Add remove() to IInstanceConfig
+                             if (config instanceof InstanceConfig)
+                             {
+                                 InstanceConfig instanceConfig = (InstanceConfig) config;
+                                 instanceConfig.remove("commitlog_sync_period_in_ms");
+                                 instanceConfig.remove("commitlog_sync_period");
+                             }
+
+                             configUpdater.accept(threadAllocator.update(config));
+                         })
                          .withInstanceInitializer(new IInstanceInitializer()
                          {
                              @Override
                              public void initialise(ClassLoader classLoader, ThreadGroup threadGroup, int num, int generation)
                              {
                                  List<Closeable> onShutdown = new ArrayList<>();
+                                 IsolatedExecutor.transferAdhoc((SerializableConsumer<Integer>) InstanceIDDefiner::setInstanceId, classLoader)
+                                                 .accept(num);
                                  InterceptorOfGlobalMethods interceptorOfGlobalMethods = IsolatedExecutor.transferAdhoc((IIsolatedExecutor.SerializableQuadFunction<Capture, LongConsumer, Consumer<Throwable>, RandomSource, InterceptorOfGlobalMethods>) InterceptingGlobalMethods::new, classLoader)
                                                                                                          .apply(builder.capture, builder.onThreadLocalRandomCheck, failures, random);
                                  onShutdown.add(interceptorOfGlobalMethods);
@@ -759,15 +811,22 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
         DirectStreamingConnectionFactory.setup(cluster);
         delivery = new SimulatedMessageDelivery(cluster);
         failureDetector = new SimulatedFailureDetector(cluster);
-        SimulatedFutureActionScheduler futureActionScheduler = builder.futureActionScheduler(numOfNodes, time, random);
-        simulated = new SimulatedSystems(random, time, delivery, execution, ballots, failureDetector, snitch, futureActionScheduler, builder.debug, failures);
-        simulated.register(futureActionScheduler);
+        FutureActionScheduler futureActionScheduler = builder.futureActionScheduler(numOfNodes, time, random);
+        Map<Verb, FutureActionScheduler> perVerbFutureActionScheduler = builder.perVerbFutureActionSchedulers(numOfNodes, time, random);
+        simulated = new SimulatedSystems(random, time, delivery, execution, ballots, failureDetector, snitch, futureActionScheduler, perVerbFutureActionScheduler, builder.debug, failures);
+        if (futureActionScheduler instanceof SimulatedFutureActionScheduler)
+            simulated.register((SimulatedFutureActionScheduler) futureActionScheduler);
 
-        RunnableActionScheduler scheduler = builder.schedulerFactory.create(random);
-        ClusterActions.Options options = new ClusterActions.Options(builder.topologyChangeLimit, Choices.uniform(KindOfSequence.values()).choose(random).period(builder.topologyChangeIntervalNanos, random),
-                                                                    Choices.random(random, builder.topologyChanges),
-                                                                    minRf, initialRf, maxRf, null);
-        simulation = factory.create(simulated, scheduler, cluster, options);
+        scheduler = builder.schedulerFactory.create(random);
+        options = new ClusterActions.Options(builder.topologyChangeLimit, Choices.uniform(KindOfSequence.values()).choose(random).period(builder.topologyChangeIntervalNanos, random),
+                                             Choices.random(random, builder.topologyChanges),
+                                             minRf, initialRf, maxRf, null);
+        this.factory = factory;
+    }
+
+    public S simulation()
+    {
+        return factory.create(simulated, scheduler, cluster, options);
     }
 
     public synchronized void close() throws IOException
@@ -800,15 +859,6 @@ public class ClusterSimulation<S extends Simulation> implements AutoCloseable
             {
                 fail = Throwables.close(fail, onUnexpectedShutdown.get(num));
             }
-        }
-
-        try
-        {
-            simulation.close();
-        }
-        catch (Throwable t)
-        {
-            fail = t;
         }
 
         try

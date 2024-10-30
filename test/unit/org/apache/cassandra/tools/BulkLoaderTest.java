@@ -68,7 +68,8 @@ public class BulkLoaderTest extends OfflineToolUtils
                                                         "Shutdown-checker",
                                                         "cluster[0-9]-connection-reaper-[0-9]",
                                                         "Attach Listener",
-                                                        "process reaper"},
+                                                        "process reaper",
+                                                        "JNA Cleaner"},
                                          false);
         assertSchemaNotLoaded();
         assertCLSMNotLoaded();
@@ -99,7 +100,10 @@ public class BulkLoaderTest extends OfflineToolUtils
                                                         "Shutdown-checker",
                                                         "cluster[0-9]-connection-reaper-[0-9]",
                                                         "Attach Listener",
-                                                        "process reaper"},
+                                                        "process reaper",
+                                                        "JNA Cleaner",
+                                                        // the driver isn't expected to terminate threads on close synchronously (CASSANDRA-19000)
+                                                        "cluster[0-9]-nio-worker-[0-9]" },
                                          false);
     assertSchemaNotLoaded();
     assertCLSMNotLoaded();
@@ -130,11 +134,14 @@ public class BulkLoaderTest extends OfflineToolUtils
                                                         "Shutdown-checker",
                                                         "cluster[0-9]-connection-reaper-[0-9]",
                                                         "Attach Listener",
-                                                        "process reaper"},
+                                                        "process reaper",
+                                                        "JNA Cleaner",
+                                                        // the driver isn't expected to terminate threads on close synchronously (CASSANDRA-19000)
+                                                        "cluster[0-9]-nio-worker-[0-9]" },
                                          false);
-    assertSchemaNotLoaded();
-    assertCLSMNotLoaded();
-    assertSystemKSNotLoaded();
+        assertSchemaNotLoaded();
+        assertCLSMNotLoaded();
+        assertSystemKSNotLoaded();
         assertKeyspaceNotLoaded();
         assertServerNotLoaded();
     }

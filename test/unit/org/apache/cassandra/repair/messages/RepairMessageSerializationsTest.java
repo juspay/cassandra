@@ -36,6 +36,7 @@ import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner.LongToken;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.distributed.test.log.ClusterMetadataTestHelper;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataInputPlus;
@@ -44,6 +45,10 @@ import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.SyncNodePair;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.schema.SchemaTestUtil;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.repair.RepairJobDesc;
 import org.apache.cassandra.schema.TableId;
@@ -66,6 +71,10 @@ public class RepairMessageSerializationsTest
     {
         DatabaseDescriptor.daemonInitialization();
         originalPartitioner = StorageService.instance.setPartitionerUnsafe(Murmur3Partitioner.instance);
+        ClusterMetadataTestHelper.setInstanceForTest();
+        SchemaTestUtil.addOrUpdateKeyspace(KeyspaceMetadata.create("serializationsTestKeyspace",
+                                                                   KeyspaceParams.simple(3)));
+        SchemaTestUtil.announceNewTable(TableMetadata.minimal("serializationsTestKeyspace", "repairMessages"));
     }
 
     @AfterClass
@@ -173,6 +182,7 @@ public class RepairMessageSerializationsTest
     public void prepareMessage() throws IOException
     {
         PrepareMessage msg = new PrepareMessage(nextTimeUUID(), new ArrayList<TableId>() {{add(TableId.generate());}},
+                                                Murmur3Partitioner.instance,
                                                 buildTokenRanges(), true, 100000L, false,
                                                 PreviewKind.NONE);
         serializeRoundTrip(msg, PrepareMessage.serializer);

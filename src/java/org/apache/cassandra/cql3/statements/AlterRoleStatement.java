@@ -19,12 +19,22 @@ package org.apache.cassandra.cql3.statements;
 
 import org.apache.cassandra.audit.AuditLogContext;
 import org.apache.cassandra.audit.AuditLogEntryType;
-import org.apache.cassandra.auth.*;
+import org.apache.cassandra.auth.AuthenticatedUser;
+import org.apache.cassandra.auth.CIDRPermissions;
+import org.apache.cassandra.auth.DCPermissions;
+import org.apache.cassandra.auth.IRoleManager;
 import org.apache.cassandra.auth.IRoleManager.Option;
+import org.apache.cassandra.auth.Permission;
+import org.apache.cassandra.auth.RoleOptions;
+import org.apache.cassandra.auth.RoleResource;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.PasswordObfuscator;
 import org.apache.cassandra.cql3.RoleName;
-import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.db.guardrails.Guardrails;
+import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.exceptions.RequestExecutionException;
+import org.apache.cassandra.exceptions.RequestValidationException;
+import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.commons.lang3.builder.ToStringBuilder;
@@ -36,18 +46,21 @@ public class AlterRoleStatement extends AuthenticationStatement
     private final RoleResource role;
     private final RoleOptions opts;
     final DCPermissions dcPermissions;
+    final CIDRPermissions cidrPermissions;
     private final boolean ifExists;
 
     public AlterRoleStatement(RoleName name, RoleOptions opts)
     {
-        this(name, opts, null, false);
+        this(name, opts, null, null, false);
     }
 
-    public AlterRoleStatement(RoleName name, RoleOptions opts, DCPermissions dcPermissions, boolean ifExists)
+    public AlterRoleStatement(RoleName name, RoleOptions opts, DCPermissions dcPermissions,
+                              CIDRPermissions cidrPermissions, boolean ifExists)
     {
         this.role = RoleResource.role(name.getName());
         this.opts = opts;
         this.dcPermissions = dcPermissions;
+        this.cidrPermissions = cidrPermissions;
         this.ifExists = ifExists;
     }
 
@@ -55,15 +68,21 @@ public class AlterRoleStatement extends AuthenticationStatement
     {
         opts.validate();
 
+        if (opts.isEmpty() && dcPermissions == null && cidrPermissions == null)
+            throw new InvalidRequestException("ALTER [ROLE|USER] can't be empty");
+
         if (dcPermissions != null)
         {
             dcPermissions.validate();
         }
 
-        if (opts.isEmpty() && dcPermissions == null)
-            throw new InvalidRequestException("ALTER [ROLE|USER] can't be empty");
+        if (cidrPermissions != null)
+        {
+            // Ensure input CIDR group names are valid, i.e, existing in CIDR groups mapping table
+            cidrPermissions.validate();
+        }
 
-        // validate login here before authorize to avoid leaking user existence to anonymous users.
+        // validate login here before authorize, to avoid leaking user existence to anonymous users.
         state.ensureNotAnonymous();
         if (!DatabaseDescriptor.getRoleManager().isExistingRole(role))
         {
@@ -105,11 +124,32 @@ public class AlterRoleStatement extends AuthenticationStatement
 
     public ResultMessage execute(ClientState state) throws RequestValidationException, RequestExecutionException
     {
+        if (ifExists && !DatabaseDescriptor.getRoleManager().isExistingRole(role))
+            return null;
+
+        if (opts.isGeneratedPassword())
+        {
+            String generatedPassword = Guardrails.password.generate();
+            if (generatedPassword != null)
+                opts.setOption(IRoleManager.Option.PASSWORD, generatedPassword);
+            else
+                throw new InvalidRequestException("You have to enable password_validator and it's generator_class_name property " +
+                                                  "in cassandra.yaml to be able to generate passwords.");
+        }
+
+        if (opts.getPassword().isPresent())
+            Guardrails.password.guard(opts.getPassword().get(), state);
+
         if (!opts.isEmpty())
             DatabaseDescriptor.getRoleManager().alterRole(state.getUser(), role, opts);
+
         if (dcPermissions != null)
             DatabaseDescriptor.getNetworkAuthorizer().setRoleDatacenters(role, dcPermissions);
-        return null;
+
+        if (cidrPermissions != null)
+            DatabaseDescriptor.getCIDRAuthorizer().setCidrGroupsForRole(role, cidrPermissions);
+
+        return getResultMessage(opts);
     }
 
     @Override

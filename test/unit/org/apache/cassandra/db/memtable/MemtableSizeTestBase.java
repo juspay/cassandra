@@ -30,24 +30,31 @@ import org.junit.runners.Parameterized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.ServerTestUtils;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.dht.IPartitioner;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.github.jamm.MemoryMeter;
+import org.github.jamm.MemoryMeter.Guess;
 
 // Note: This test can be run in idea with the allocation type configured in the test yaml and memtable using the
 // value memtableClass is initialized with.
 @RunWith(Parameterized.class)
 public abstract class MemtableSizeTestBase extends CQLTester
 {
-    // Note: To see a printout of the usage for each object, add .enableDebug() here (most useful with smaller number of
+    // Note: To see a printout of the usage for each object, add .printVisitedTree() here (most useful with smaller number of
     // partitions).
-    static MemoryMeter meter = new MemoryMeter().ignoreKnownSingletons()
-                                                .withGuessing(MemoryMeter.Guess.FALLBACK_UNSAFE);
+    static MemoryMeter meter =  MemoryMeter.builder()
+                                           .withGuessing(Guess.INSTRUMENTATION_AND_SPECIFICATION,
+                                                         Guess.UNSAFE)
+//                                           .printVisitedTreeUpTo(1000)
+                                           .build();
 
     static final Logger logger = LoggerFactory.getLogger(MemtableSizeTestBase.class);
 
@@ -56,6 +63,8 @@ public abstract class MemtableSizeTestBase extends CQLTester
 
     static final int deletedPartitions = 10_000;
     static final int deletedRows = 5_000;
+
+    static final int totalPartitions = partitions + deletedPartitions + deletedRows;
 
     @Parameterized.Parameter(0)
     public String memtableClass = "skiplist";
@@ -74,8 +83,9 @@ public abstract class MemtableSizeTestBase extends CQLTester
     // Slab overhead, added when the memtable uses heap_buffers.
     final int SLAB_OVERHEAD = 1024 * 1024;
 
-    public static void setup(Config.MemtableAllocationType allocationType)
+    public static void setup(Config.MemtableAllocationType allocationType, IPartitioner partitioner)
     {
+        ServerTestUtils.daemonInitialization();
         try
         {
             Field confField = DatabaseDescriptor.class.getDeclaredField("conf");
@@ -89,7 +99,7 @@ public abstract class MemtableSizeTestBase extends CQLTester
             throw new RuntimeException(e);
         }
 
-        CQLTester.setUpClass();
+        StorageService.instance.setPartitionerUnsafe(partitioner);
         CQLTester.prepareServer();
         logger.info("setupClass done, allocation type {}", allocationType);
     }
@@ -178,23 +188,14 @@ public abstract class MemtableSizeTestBase extends CQLTester
                     actualHeap += trie_overhead;    // adjust trie memory with unused buffer space if on-heap
                     break;
             }
-            String message = String.format("Expected heap usage close to %s, got %s, %s difference.\n",
+            double deltaPerPartition = (expectedHeap - actualHeap) / (double) totalPartitions;
+            String message = String.format("Expected heap usage close to %s, got %s, %s difference. " +
+                                           "Delta per partition: %.2f bytes",
                                            FBUtilities.prettyPrintMemory(expectedHeap),
                                            FBUtilities.prettyPrintMemory(actualHeap),
-                                           FBUtilities.prettyPrintMemory(expectedHeap - actualHeap));
+                                           FBUtilities.prettyPrintMemory(expectedHeap - actualHeap),
+                                           deltaPerPartition);
             logger.info(message);
-            if (Math.abs(actualHeap - expectedHeap) > max_difference)
-            {
-                // Under Java 11, it seems the meter can reach into phantom reference queues and count more space than
-                // is actually reachable. Unfortunately ignoreNonStrongReferences() does not help (worse, it throws
-                // exceptions trying to get a phantom referrent). Retrying the measurement appears to clear these up.
-                Thread.sleep(50);
-                long secondPass = meter.measureDeep(memtable);
-                logger.error("Deep size first pass {} second pass {}",
-                             FBUtilities.prettyPrintMemory(deepSizeAfter),
-                             FBUtilities.prettyPrintMemory(secondPass));
-                expectedHeap = secondPass - deepSizeBefore;
-            }
 
             Assert.assertTrue(message, Math.abs(actualHeap - expectedHeap) <= max_difference);
         }

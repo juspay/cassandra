@@ -34,6 +34,8 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
+
 /**
  * Represents a positive time duration. Wrapper class for Cassandra duration configuration parameters, providing to the
  * users the opportunity to be able to provide config with a unit of their choice in cassandra.yaml as per the available
@@ -108,7 +110,7 @@ public abstract class DurationSpec
 
         if (minUnit.convert(quantity, sourceUnit) >= max)
             throw new IllegalArgumentException("Invalid duration: " + value + ". It shouldn't be more than " +
-                                             (max - 1) + " in " + minUnit.name().toLowerCase());
+                                             (max - 1) + " in " + toLowerCaseLocalized(minUnit.name()));
     }
 
     private static void validateQuantity(long quantity, TimeUnit sourceUnit, TimeUnit minUnit, long max)
@@ -118,8 +120,8 @@ public abstract class DurationSpec
 
         if (minUnit.convert(quantity, sourceUnit) >= max)
             throw new IllegalArgumentException(String.format("Invalid duration: %d %s. It shouldn't be more than %d in %s",
-                                                           quantity, sourceUnit.name().toLowerCase(),
-                                                           max - 1, minUnit.name().toLowerCase()));
+                                                           quantity, toLowerCaseLocalized(sourceUnit.name()),
+                                                           max - 1, toLowerCaseLocalized(minUnit.name())));
     }
 
     // get vs no-get prefix is not consistent in the code base, but for classes involved with config parsing, it is
@@ -141,7 +143,7 @@ public abstract class DurationSpec
      */
     static TimeUnit fromSymbol(String symbol)
     {
-        switch (symbol.toLowerCase())
+        switch (toLowerCaseLocalized(symbol))
         {
             case "d": return DAYS;
             case "h": return HOURS;
@@ -269,6 +271,64 @@ public abstract class DurationSpec
         public long toNanoseconds()
         {
             return unit().toNanos(quantity());
+        }
+    }
+
+    /**
+     * Represents a duration used for Cassandra configuration. The bound is [0, Long.MAX_VALUE) in microseconds.
+     * If the user sets a different unit - we still validate that converted to microseconds the quantity will not exceed
+     * that upper bound. (CASSANDRA-17571)
+     */
+    public final static class LongMicrosecondsBound extends DurationSpec
+    {
+        /**
+         * Creates a {@code DurationSpec.LongMicrosecondsBound} of the specified amount.
+         * The bound is [0, Long.MAX_VALUE) in microseconds.
+         *
+         * @param value the duration
+         */
+        public LongMicrosecondsBound(String value)
+        {
+            super(value, MICROSECONDS, Long.MAX_VALUE);
+        }
+
+        /**
+         * Creates a {@code DurationSpec.LongMicrosecondsBound} of the specified amount in the specified unit.
+         * The bound is [0, Long.MAX_VALUE) in milliseconds.
+         *
+         * @param quantity where quantity shouldn't be bigger than Long.MAX_VALUE - 1 in microseconds
+         * @param unit in which the provided quantity is
+         */
+        public LongMicrosecondsBound(long quantity, TimeUnit unit)
+        {
+            super(quantity, unit, MICROSECONDS, Long.MAX_VALUE);
+        }
+
+        /**
+         * Creates a {@code DurationSpec.LongMicrosecondsBound} of the specified amount in microseconds.
+         * The bound is [0, Long.MAX_VALUE) in microseconds.
+         *
+         * @param microseconds where milliseconds shouldn't be bigger than Long.MAX_VALUE-1
+         */
+        public LongMicrosecondsBound(long microseconds)
+        {
+            this(microseconds, MICROSECONDS);
+        }
+
+        /**
+         * @return this duration in number of milliseconds
+         */
+        public long toMicroseconds()
+        {
+            return unit().toMicros(quantity());
+        }
+
+        /**
+         * @return this duration in number of seconds
+         */
+        public long toSeconds()
+        {
+            return unit().toSeconds(quantity());
         }
     }
 

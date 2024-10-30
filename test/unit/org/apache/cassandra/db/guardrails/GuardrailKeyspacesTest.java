@@ -18,8 +18,11 @@
 
 package org.apache.cassandra.db.guardrails;
 
+
+import org.junit.After;
 import org.junit.Test;
 
+import org.apache.cassandra.config.Converters;
 import org.apache.cassandra.schema.Schema;
 
 import static java.lang.String.format;
@@ -48,8 +51,30 @@ public class GuardrailKeyspacesTest extends ThresholdTester
         return Schema.instance.getUserKeyspaces().size();
     }
 
+    @After
+    public void afterTest() throws Throwable
+    {
+        // CQLTester deletes keyspaces after tests, but does so asynchronously
+        super.afterTest();
+    }
+    
     @Test
     public void testCreateKeyspace() throws Throwable
+    {
+        assertCreateKeyspace();
+    }
+
+    @Test
+    public void testCreateKeyspaceWithDeprecatedKeyspaceCountThreshold() throws Throwable
+    {
+        // Convert and set a deprecated threshold value based on the total number of keyspaces, not just user keyspaces
+        int convertedValue = (int) Converters.KEYSPACE_COUNT_THRESHOLD_TO_GUARDRAIL.convert(Schema.instance.getKeyspaces().size());
+        Guardrails.instance.setKeyspacesThreshold(convertedValue + 1, convertedValue + 2);
+
+        assertCreateKeyspace();
+    }
+
+    private void assertCreateKeyspace() throws Throwable
     {
         // create keyspaces until hitting the two warn/fail thresholds
         String k1 = assertCreateKeyspaceValid();

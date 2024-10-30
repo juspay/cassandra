@@ -27,11 +27,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
-import org.apache.cassandra.config.Config;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.apache.cassandra.config.CassandraRelevantProperties.APPROXIMATE_TIME_PRECISION_MS;
 import static org.apache.cassandra.config.CassandraRelevantProperties.CLOCK_MONOTONIC_APPROX;
 import static org.apache.cassandra.config.CassandraRelevantProperties.CLOCK_MONOTONIC_PRECISE;
+import static org.apache.cassandra.config.CassandraRelevantProperties.NANOTIMETOMILLIS_TIMESTAMP_UPDATE_INTERVAL;
 import static org.apache.cassandra.utils.Clock.Global.nanoTime;
 import static org.apache.cassandra.utils.Shared.Scope.SIMULATION;
 
@@ -139,8 +140,7 @@ public interface MonotonicClock
     static abstract class AbstractEpochSamplingClock implements MonotonicClock
     {
         private static final Logger logger = LoggerFactory.getLogger(AbstractEpochSamplingClock.class);
-        private static final String UPDATE_INTERVAL_PROPERTY = Config.PROPERTY_PREFIX + "NANOTIMETOMILLIS_TIMESTAMP_UPDATE_INTERVAL";
-        private static final long UPDATE_INTERVAL_MS = Long.getLong(UPDATE_INTERVAL_PROPERTY, 10000);
+        private static final long UPDATE_INTERVAL_MS = NANOTIMETOMILLIS_TIMESTAMP_UPDATE_INTERVAL.getLong();
 
         @VisibleForTesting
         public static class AlmostSameTime implements MonotonicClockTranslation
@@ -248,7 +248,14 @@ public interface MonotonicClock
 
     public static class SystemClock extends AbstractEpochSamplingClock
     {
-        private SystemClock()
+        // Without making this constructor public you may start getting the following exception in the simulator:
+        //    java.lang.IncompatibleClassChangeError: Type
+        //       org.apache.cassandra.utils.MonotonicClock$Global is not a nest member of
+        //       org.apache.cassandra.utils.MonotonicClock: types are in different packages
+        // There might be a problem with a simulator and how we allow access, but I verified the change access
+        // flags on <init> method of the org/apache/cassandra/utils/MonotonicClock$SystemClock
+        // class to ACC_PUBLIC, and ensured proper testing relationship from both the surrounding and nested class.
+        public SystemClock()
         {
             super(Clock.Global::currentTimeMillis);
         }
@@ -281,7 +288,7 @@ public interface MonotonicClock
     public static class SampledClock implements MonotonicClock
     {
         private static final Logger logger = LoggerFactory.getLogger(SampledClock.class);
-        private static final int UPDATE_INTERVAL_MS = Math.max(1, Integer.parseInt(System.getProperty(Config.PROPERTY_PREFIX + "approximate_time_precision_ms", "2")));
+        private static final int UPDATE_INTERVAL_MS = Math.max(1, APPROXIMATE_TIME_PRECISION_MS.getInt());
         private static final long ERROR_NANOS = MILLISECONDS.toNanos(UPDATE_INTERVAL_MS);
 
         private final MonotonicClock precise;

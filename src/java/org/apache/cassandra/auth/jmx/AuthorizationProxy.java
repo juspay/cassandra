@@ -191,9 +191,10 @@ public class AuthorizationProxy implements InvocationHandler
     @VisibleForTesting
     public boolean authorize(Subject subject, String methodName, Object[] args)
     {
-        logger.trace("Authorizing JMX method invocation {} for {}",
-                     methodName,
-                     subject == null ? "" :subject.toString().replaceAll("\\n", " "));
+        if (logger.isTraceEnabled())
+            logger.trace("Authorizing JMX method invocation {} for {}",
+                         methodName,
+                         subject == null ? "" : subject.toString().replaceAll("\\n", " "));
 
         if (!isAuthSetupComplete.getAsBoolean())
         {
@@ -281,7 +282,8 @@ public class AuthorizationProxy implements InvocationHandler
         if (null == requiredPermission)
             return false;
 
-        logger.trace("JMX invocation of {} on {} requires permission {}", methodName, targetBean, requiredPermission);
+        if (logger.isTraceEnabled())
+            logger.trace("JMX invocation of {} on {} requires permission {}", methodName, targetBean, requiredPermission);
 
         // find any JMXResources upon which the authenticated subject has been granted the
         // reqired permission. We'll do ObjectName-specific filtering & matching of resources later
@@ -585,7 +587,8 @@ public class AuthorizationProxy implements InvocationHandler
     public static interface JmxPermissionsCacheMBean extends AuthCacheMBean
     {
         public static final String CACHE_NAME = "JmxPermissionsCache";
-        @Deprecated
+        /** @deprecated See CASSANDRA-16404 */
+        @Deprecated(since = "4.1")
         public static final String DEPRECATED_CACHE_NAME = "JMXPermissionsCache";
 
         public void invalidatePermissions(String roleName);

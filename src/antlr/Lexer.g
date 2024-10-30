@@ -124,6 +124,7 @@ K_FILTERING:   F I L T E R I N G;
 K_IF:          I F;
 K_IS:          I S;
 K_CONTAINS:    C O N T A I N S;
+K_BETWEEN:     B E T W E E N;
 K_GROUP:       G R O U P;
 K_CLUSTER:     C L U S T E R;
 K_INTERNALS:   I N T E R N A L S;
@@ -147,8 +148,10 @@ K_USER:        U S E R;
 K_USERS:       U S E R S;
 K_ROLE:        R O L E;
 K_ROLES:       R O L E S;
+K_SUPERUSERS:  S U P E R U S E R S;
 K_SUPERUSER:   S U P E R U S E R;
 K_NOSUPERUSER: N O S U P E R U S E R;
+K_GENERATED:   G E N E R A T E D;
 K_PASSWORD:    P A S S W O R D;
 K_HASHED:      H A S H E D;
 K_LOGIN:       L O G I N;
@@ -156,6 +159,8 @@ K_NOLOGIN:     N O L O G I N;
 K_OPTIONS:     O P T I O N S;
 K_ACCESS:      A C C E S S;
 K_DATACENTERS: D A T A C E N T E R S;
+K_CIDRS:       C I D R S;
+K_IDENTITY:    I D E N T I T Y;
 
 K_CLUSTERING:  C L U S T E R I N G;
 K_ASCII:       A S C I I;
@@ -217,6 +222,13 @@ K_JSON:        J S O N;
 K_DEFAULT:     D E F A U L T;
 K_UNSET:       U N S E T;
 K_LIKE:        L I K E;
+
+K_MASKED:      M A S K E D;
+K_UNMASK:      U N M A S K;
+K_SELECT_MASKED: S E L E C T '_' M A S K E D;
+
+K_VECTOR:      V E C T O R;
+K_ANN:         A N N;
 
 // Case-insensitive alpha characters
 fragment A: ('a'|'A');
@@ -295,6 +307,22 @@ fragment EXPONENT
     : E ('+' | '-')? DIGIT+
     ;
 
+fragment DURATION_ISO_8601_PERIOD_DESIGNATORS
+    : '-'? 'P' DIGIT+ 'Y' (DIGIT+ 'M')? (DIGIT+ 'D')?
+    | '-'? 'P' DIGIT+ 'M' (DIGIT+ 'D')?
+    | '-'? 'P' DIGIT+ 'D'
+    ;
+
+fragment DURATION_ISO_8601_TIME_DESIGNATORS
+    : 'T' DIGIT+ 'H' (DIGIT+ 'M')? (DIGIT+ 'S')?
+    | 'T' DIGIT+ 'M' (DIGIT+ 'S')?
+    | 'T' DIGIT+ 'S'
+    ;
+
+fragment DURATION_ISO_8601_WEEK_PERIOD_DESIGNATOR
+    : '-'? 'P' DIGIT+ 'W'
+    ;
+
 fragment DURATION_UNIT
     : Y
     | M O
@@ -340,9 +368,10 @@ BOOLEAN
 
 DURATION
     : '-'? DIGIT+ DURATION_UNIT (DIGIT+ DURATION_UNIT)*
-    | '-'? 'P' (DIGIT+ 'Y')? (DIGIT+ 'M')? (DIGIT+ 'D')? ('T' (DIGIT+ 'H')? (DIGIT+ 'M')? (DIGIT+ 'S')?)? // ISO 8601 "format with designators"
-    | '-'? 'P' DIGIT+ 'W'
     | '-'? 'P' DIGIT DIGIT DIGIT DIGIT '-' DIGIT DIGIT '-' DIGIT DIGIT 'T' DIGIT DIGIT ':' DIGIT DIGIT ':' DIGIT DIGIT // ISO 8601 "alternative format"
+    | '-'? 'P' DURATION_ISO_8601_TIME_DESIGNATORS
+    | DURATION_ISO_8601_WEEK_PERIOD_DESIGNATOR
+    | DURATION_ISO_8601_PERIOD_DESIGNATORS DURATION_ISO_8601_TIME_DESIGNATORS?
     ;
 
 IDENT

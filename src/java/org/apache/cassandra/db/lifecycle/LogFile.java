@@ -21,24 +21,36 @@
 package org.apache.cassandra.db.lifecycle;
 
 import java.nio.file.Path;
-import java.util.*;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableSet;
+import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import javax.annotation.concurrent.NotThreadSafe;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
-
-import org.apache.cassandra.io.util.File;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.lifecycle.LogRecord.Type;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
+import org.apache.cassandra.io.util.File;
 import org.apache.cassandra.utils.Throwables;
 import org.apache.cassandra.utils.TimeUUID;
 
@@ -55,27 +67,33 @@ import static org.apache.cassandra.utils.Throwables.merge;
  *
  * @see LogTransaction
  */
+@NotThreadSafe
 final class LogFile implements AutoCloseable
 {
     private static final Logger logger = LoggerFactory.getLogger(LogFile.class);
 
     static String EXT = ".log";
     static char SEP = '_';
-    // cc_txn_opname_id.log (where cc is one of the sstable versions defined in BigVersion)
-    static Pattern FILE_REGEX = Pattern.compile(String.format("^(.{2})_txn_(.*)_(.*)%s$", EXT));
+    // Log file name format:
+    // legacy for BIG format: cc_txn_opname_id.log (where cc is one of the sstable versions defined in BigVersion)
+    // other formats: fmt-cc_txn_opname_id.log (where fmt is the format and name and cc is one of its versions)
+    static Pattern FILE_REGEX = Pattern.compile(String.format("^((?:[a-z]+-)?.{2}_)?txn_(.*)_(.*)%s$", EXT));
 
     // A set of physical files on disk, each file is an identical replica
     private final LogReplicaSet replicas = new LogReplicaSet();
 
     // The transaction records, this set must be ORDER PRESERVING
-    private final Set<LogRecord> records = Collections.synchronizedSet(new LinkedHashSet<>()); // TODO: Hack until we fix CASSANDRA-14554
-    private final Set<LogRecord> onDiskRecords = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final Set<LogRecord> records = new LinkedHashSet<>();
+    private final Set<LogRecord> onDiskRecords = new LinkedHashSet<>();
+    private boolean completed = false;
 
     // The type of the transaction
     private final OperationType type;
 
     // The unique id of the transaction
     private final TimeUUID id;
+
+    private final Version version = DatabaseDescriptor.getSelectedSSTableFormat().getLatestVersion();
 
     static LogFile make(File logReplica)
     {
@@ -125,6 +143,11 @@ final class LogFile implements AutoCloseable
 
             deleteFilesForRecordsOfType(committed() ? Type.REMOVE : Type.ADD);
 
+            // safe to release memory for both types of records, the completed flag will prevent
+            // new records being added.
+            records.clear();
+            onDiskRecords.clear();
+
             // we sync the parent directories between contents and log deletion
             // to ensure there is a happens before edge between them
             Throwables.maybeFail(syncDirectory(accumulate));
@@ -164,6 +187,11 @@ final class LogFile implements AutoCloseable
             logger.error("Failed to read records for transaction log {}", this);
             return false;
         }
+        LogRecord lastRecord = getLastRecord();
+        if (lastRecord != null &&
+            (lastRecord.type == Type.COMMIT || lastRecord.type == Type.ABORT) &&
+            lastRecord.isValid())
+            completed = true;
 
         Set<String> absolutePaths = new HashSet<>();
         for (LogRecord record : records)
@@ -278,11 +306,13 @@ final class LogFile implements AutoCloseable
     void commit()
     {
         addRecord(LogRecord.makeCommit(currentTimeMillis()));
+        completed = true;
     }
 
     void abort()
     {
         addRecord(LogRecord.makeAbort(currentTimeMillis()));
+        completed = true;
     }
 
     private boolean isLastRecordValidWithType(Type type)
@@ -298,14 +328,9 @@ final class LogFile implements AutoCloseable
         return isLastRecordValidWithType(Type.COMMIT);
     }
 
-    boolean aborted()
-    {
-        return isLastRecordValidWithType(Type.ABORT);
-    }
-
     boolean completed()
     {
-        return committed() || aborted();
+        return completed;
     }
 
     void add(SSTable table)
@@ -355,8 +380,8 @@ final class LogFile implements AutoCloseable
 
     void addRecord(LogRecord record)
     {
-        if (completed())
-            throw new IllegalStateException("Transaction already completed");
+        if (completed)
+            throw TransactionAlreadyCompletedException.create(getFiles());
 
         if (records.contains(record))
             throw new IllegalStateException("Record already exists");
@@ -369,6 +394,9 @@ final class LogFile implements AutoCloseable
 
     void remove(SSTable table)
     {
+        if (completed)
+            throw TransactionAlreadyCompletedException.create(getFiles());
+
         LogRecord record = makeAddRecord(table);
         assert records.contains(record) : String.format("[%s] is not tracked by %s", record, id);
         assert record.absolutePath.isPresent();
@@ -403,8 +431,6 @@ final class LogFile implements AutoCloseable
 
         for (List<File> toDelete : existingFiles.values())
             LogFile.deleteRecordFiles(toDelete);
-
-        records.clear();
     }
 
     private static void deleteRecordFiles(List<File> existingFiles)
@@ -496,14 +522,13 @@ final class LogFile implements AutoCloseable
 
     private String getFileName()
     {
-        return StringUtils.join(BigFormat.latestVersion,
-                                LogFile.SEP,
-                                "txn",
-                                LogFile.SEP,
-                                type.fileName,
-                                LogFile.SEP,
-                                id.toString(),
-                                LogFile.EXT);
+        // For pre-5.0 versions, only BigFormat is supported, and the file name includes only the version string.
+        // To retain the ability to downgrade to 4.x, we keep the old file naming scheme for BigFormat sstables
+        // and add format names for other formats as they are supported only in 5.0 and above.
+        return StringUtils.join(BigFormat.is(version.format) ? version.toString() : version.toFormatAndVersionString(), LogFile.SEP, // remove version and separator when downgrading to 4.x is becomes unsupported
+                                "txn", LogFile.SEP,
+                                type.fileName, LogFile.SEP,
+                                id.toString(), LogFile.EXT);
     }
 
     public boolean isEmpty()

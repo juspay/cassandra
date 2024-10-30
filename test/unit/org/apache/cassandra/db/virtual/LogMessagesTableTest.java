@@ -25,7 +25,6 @@ import java.util.LinkedList;
 import java.util.List;
 
 import com.google.common.collect.ImmutableList;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import ch.qos.logback.classic.Level;
@@ -46,12 +45,6 @@ public class LogMessagesTableTest extends CQLTester
 {
     private String keyspace = createKeyspaceName();
     private LogMessagesTable table;
-
-    @BeforeClass
-    public static void setup()
-    {
-        CQLTester.setUpClass();
-    }
 
     @Test
     public void testTruncate() throws Throwable
@@ -125,19 +118,19 @@ public class LogMessagesTableTest extends CQLTester
     @Test
     public void testResolvingBufferSize()
     {
-        System.setProperty(LOGS_VIRTUAL_TABLE_MAX_ROWS.getKey(), "-1");
+        LOGS_VIRTUAL_TABLE_MAX_ROWS.setInt(-1);
         assertEquals(LogMessagesTable.LOGS_VIRTUAL_TABLE_DEFAULT_ROWS, LogMessagesTable.resolveBufferSize());
 
-        System.setProperty(LOGS_VIRTUAL_TABLE_MAX_ROWS.getKey(), "0");
+        LOGS_VIRTUAL_TABLE_MAX_ROWS.setInt(0);
         assertEquals(LogMessagesTable.LOGS_VIRTUAL_TABLE_DEFAULT_ROWS, LogMessagesTable.resolveBufferSize());
 
-        System.setProperty(LOGS_VIRTUAL_TABLE_MAX_ROWS.getKey(), "1000001");
+        LOGS_VIRTUAL_TABLE_MAX_ROWS.setInt(1000001);
         assertEquals(LogMessagesTable.LOGS_VIRTUAL_TABLE_DEFAULT_ROWS, LogMessagesTable.resolveBufferSize());
 
-        System.setProperty(LOGS_VIRTUAL_TABLE_MAX_ROWS.getKey(), "999");
+        LOGS_VIRTUAL_TABLE_MAX_ROWS.setInt(999);
         assertEquals(LogMessagesTable.LOGS_VIRTUAL_TABLE_DEFAULT_ROWS, LogMessagesTable.resolveBufferSize());
 
-        System.setProperty(LOGS_VIRTUAL_TABLE_MAX_ROWS.getKey(), "50001");
+        LOGS_VIRTUAL_TABLE_MAX_ROWS.setInt(50001);
         assertEquals(50001, LogMessagesTable.resolveBufferSize());
     }
 

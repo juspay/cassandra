@@ -40,6 +40,13 @@ import static org.apache.cassandra.simulator.cluster.ClusterActions.Options.noAc
 public class TrivialSimulationTest extends SimulationTestBase
 {
     @Test
+    public void identityHashMapTest()
+    {
+        simulate(arr(() -> new IdentityHashMap<>().put(1, 1)),
+                 () -> {});
+    }
+
+    @Test
     public void trivialTest() throws IOException // for demonstration/experiment purposes
     {
         simulate((simulation) -> {
@@ -52,6 +59,7 @@ public class TrivialSimulationTest extends SimulationTestBase
                  },
                  (simulation) -> ActionList.of(simulation.executeQuery(1, "INSERT INTO ks.tbl VALUES (1,1)", ConsistencyLevel.QUORUM),
                                                simulation.executeQuery(1, "SELECT * FROM ks.tbl WHERE pk = 1", ConsistencyLevel.QUORUM)),
+                 (simulation) -> ActionList.of(),
                  (config) -> config
                              .threadCount(10)
                              .nodes(3, 3)
@@ -83,10 +91,5 @@ public class TrivialSimulationTest extends SimulationTestBase
                  () -> {});
     }
 
-    @Test
-    public void identityHashMapTest()
-    {
-        simulate(arr(() -> new IdentityHashMap<>().put(1, 1)),
-                 () -> {});
-    }
+
 }

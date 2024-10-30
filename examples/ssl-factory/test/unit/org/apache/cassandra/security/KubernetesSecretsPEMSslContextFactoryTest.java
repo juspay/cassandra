@@ -114,7 +114,7 @@ public class KubernetesSecretsPEMSslContextFactoryTest
          * In order to test with real 'env' variables comment out this line and set appropriate env variable. This is
          * done to avoid having a dependency on env in the unit test.
          */
-        commonConfig.put("require_client_auth", Boolean.FALSE);
+        commonConfig.put("require_client_auth", "false";
         commonConfig.put("cipher_suites", Arrays.asList("TLS_RSA_WITH_AES_128_CBC_SHA"));
     }
 
@@ -147,7 +147,7 @@ public class KubernetesSecretsPEMSslContextFactoryTest
 
         KubernetesSecretsPEMSslContextFactory kubernetesSecretsSslContextFactory =
         new KubernetesSecretsPEMSslContextFactoryForTestOnly(config);
-        kubernetesSecretsSslContextFactory.checkedExpiry = false;
+        kubernetesSecretsSslContextFactory.trustStoreContext.checkedExpiry = false;
         kubernetesSecretsSslContextFactory.buildTrustManagerFactory();
     }
 
@@ -158,7 +158,7 @@ public class KubernetesSecretsPEMSslContextFactoryTest
         config.putAll(commonConfig);
 
         KubernetesSecretsPEMSslContextFactory kubernetesSecretsSslContextFactory = new KubernetesSecretsPEMSslContextFactoryForTestOnly(config);
-        kubernetesSecretsSslContextFactory.checkedExpiry = false;
+        kubernetesSecretsSslContextFactory.trustStoreContext.checkedExpiry = false;
         TrustManagerFactory trustManagerFactory = kubernetesSecretsSslContextFactory.buildTrustManagerFactory();
         Assert.assertNotNull(trustManagerFactory);
     }
@@ -172,7 +172,7 @@ public class KubernetesSecretsPEMSslContextFactoryTest
 
         KubernetesSecretsPEMSslContextFactory kubernetesSecretsSslContextFactory =
         new KubernetesSecretsPEMSslContextFactoryForTestOnly(config);
-        kubernetesSecretsSslContextFactory.checkedExpiry = false;
+        kubernetesSecretsSslContextFactory.keystoreContext.checkedExpiry = false;
         kubernetesSecretsSslContextFactory.buildKeyManagerFactory();
     }
 
@@ -262,7 +262,7 @@ public class KubernetesSecretsPEMSslContextFactoryTest
         addKeystoreOptions(config);
 
         KubernetesSecretsPEMSslContextFactory kubernetesSecretsSslContextFactory = new KubernetesSecretsPEMSslContextFactoryForTestOnly(config);
-        kubernetesSecretsSslContextFactory.checkedExpiry = false;
+        kubernetesSecretsSslContextFactory.trustStoreContext.checkedExpiry = false;
         TrustManagerFactory trustManagerFactory = kubernetesSecretsSslContextFactory.buildTrustManagerFactory();
         Assert.assertNotNull(trustManagerFactory);
         Assert.assertFalse(kubernetesSecretsSslContextFactory.shouldReload());
@@ -282,7 +282,7 @@ public class KubernetesSecretsPEMSslContextFactoryTest
         addKeystoreOptions(config);
 
         KubernetesSecretsPEMSslContextFactory kubernetesSecretsSslContextFactory = new KubernetesSecretsPEMSslContextFactoryForTestOnly(config);
-        kubernetesSecretsSslContextFactory.checkedExpiry = false;
+        kubernetesSecretsSslContextFactory.keystoreContext.checkedExpiry = false;
         KeyManagerFactory keyManagerFactory = kubernetesSecretsSslContextFactory.buildKeyManagerFactory();
         Assert.assertNotNull(keyManagerFactory);
         Assert.assertFalse(kubernetesSecretsSslContextFactory.shouldReload());

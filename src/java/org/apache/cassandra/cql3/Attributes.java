@@ -21,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.cql3.terms.Term;
 import org.apache.cassandra.db.ExpirationDateOverflowHandling;
 import org.apache.cassandra.db.LivenessInfo;
 import org.apache.cassandra.db.marshal.Int32Type;
@@ -128,7 +129,7 @@ public class Attributes
         }
         catch (MarshalException e)
         {
-            throw new InvalidRequestException("Invalid timestamp value: " + tval);
+            throw new InvalidRequestException("Invalid TTL value: " + tval);
         }
 
         int ttl = Int32Type.instance.compose(tval);

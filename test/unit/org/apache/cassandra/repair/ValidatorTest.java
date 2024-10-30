@@ -54,6 +54,7 @@ import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.MerkleTree;
 import org.apache.cassandra.utils.MerkleTrees;
 import org.apache.cassandra.utils.TimeUUID;
@@ -111,7 +112,7 @@ public class ValidatorTest
 
         ColumnFamilyStore cfs = Keyspace.open(keyspace).getColumnFamilyStore(columnFamily);
 
-        Validator validator = new Validator(new ValidationState(desc, remote), 0, PreviewKind.NONE);
+        Validator validator = new Validator(new ValidationState(Clock.Global.clock(), desc, remote), 0, PreviewKind.NONE);
         validator.state.phase.start(10, 10);
         MerkleTrees trees = new MerkleTrees(partitioner);
         trees.addMerkleTrees((int) Math.pow(2, 15), validator.desc.ranges);
@@ -148,7 +149,7 @@ public class ValidatorTest
 
         InetAddressAndPort remote = InetAddressAndPort.getByName("127.0.0.2");
 
-        Validator validator = new Validator(new ValidationState(desc, remote), 0, PreviewKind.NONE);
+        Validator validator = new Validator(new ValidationState(Clock.Global.clock(), desc, remote), 0, PreviewKind.NONE);
         validator.fail(new Throwable());
 
         Message message = outgoingMessageSink.get(TEST_TIMEOUT, TimeUnit.SECONDS);
@@ -196,18 +197,18 @@ public class ValidatorTest
 
         SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
         TimeUUID repairSessionId = nextTimeUUID();
-        final RepairJobDesc desc = new RepairJobDesc(repairSessionId, nextTimeUUID(), cfs.keyspace.getName(),
-                                                     cfs.getTableName(), singletonList(new Range<>(sstable.first.getToken(),
-                                                                                                               sstable.last.getToken())));
+        final RepairJobDesc desc = new RepairJobDesc(repairSessionId, nextTimeUUID(), cfs.getKeyspaceName(),
+                                                     cfs.getTableName(), singletonList(new Range<>(sstable.getFirst().getToken(),
+                                                                                                   sstable.getLast().getToken())));
 
         InetAddressAndPort host = InetAddressAndPort.getByName("127.0.0.2");
 
-        ActiveRepairService.instance.registerParentRepairSession(repairSessionId, host,
-                                                                 Collections.singletonList(cfs), desc.ranges, false, ActiveRepairService.UNREPAIRED_SSTABLE,
-                                                                 false, PreviewKind.NONE);
+        ActiveRepairService.instance().registerParentRepairSession(repairSessionId, host,
+                                                                   Collections.singletonList(cfs), desc.ranges, false, ActiveRepairService.UNREPAIRED_SSTABLE,
+                                                                   false, PreviewKind.NONE);
 
         final CompletableFuture<Message> outgoingMessageSink = registerOutgoingMessageSink();
-        Validator validator = new Validator(new ValidationState(desc, host), 0, true, false, PreviewKind.NONE);
+        Validator validator = new Validator(SharedContext.Global.instance, new ValidationState(Clock.Global.clock(), desc, host), 0, true, false, PreviewKind.NONE);
         ValidationManager.instance.submitValidation(cfs, validator);
 
         Message message = outgoingMessageSink.get(TEST_TIMEOUT, TimeUnit.SECONDS);
@@ -253,18 +254,18 @@ public class ValidatorTest
 
         SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
         TimeUUID repairSessionId = nextTimeUUID();
-        final RepairJobDesc desc = new RepairJobDesc(repairSessionId, nextTimeUUID(), cfs.keyspace.getName(),
-                                                     cfs.getTableName(), singletonList(new Range<>(sstable.first.getToken(),
-                                                                                                               sstable.last.getToken())));
+        final RepairJobDesc desc = new RepairJobDesc(repairSessionId, nextTimeUUID(), cfs.getKeyspaceName(),
+                                                     cfs.getTableName(), singletonList(new Range<>(sstable.getFirst().getToken(),
+                                                                                                   sstable.getLast().getToken())));
 
         InetAddressAndPort host = InetAddressAndPort.getByName("127.0.0.2");
 
-        ActiveRepairService.instance.registerParentRepairSession(repairSessionId, host,
-                                                                 Collections.singletonList(cfs), desc.ranges, false, ActiveRepairService.UNREPAIRED_SSTABLE,
-                                                                 false, PreviewKind.NONE);
+        ActiveRepairService.instance().registerParentRepairSession(repairSessionId, host,
+                                                                   Collections.singletonList(cfs), desc.ranges, false, ActiveRepairService.UNREPAIRED_SSTABLE,
+                                                                   false, PreviewKind.NONE);
 
         final CompletableFuture<Message> outgoingMessageSink = registerOutgoingMessageSink();
-        Validator validator = new Validator(new ValidationState(desc, host), 0, true, false, PreviewKind.NONE);
+        Validator validator = new Validator(SharedContext.Global.instance, new ValidationState(Clock.Global.clock(), desc, host), 0, true, false, PreviewKind.NONE);
         ValidationManager.instance.submitValidation(cfs, validator);
 
         Message message = outgoingMessageSink.get(TEST_TIMEOUT, TimeUnit.SECONDS);
@@ -313,20 +314,20 @@ public class ValidatorTest
         SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
         TimeUUID repairSessionId = nextTimeUUID();
 
-        List<Range<Token>> ranges = splitHelper(new Range<>(sstable.first.getToken(), sstable.last.getToken()), 2);
+        List<Range<Token>> ranges = splitHelper(new Range<>(sstable.getFirst().getToken(), sstable.getLast().getToken()), 2);
 
 
-        final RepairJobDesc desc = new RepairJobDesc(repairSessionId, nextTimeUUID(), cfs.keyspace.getName(),
+        final RepairJobDesc desc = new RepairJobDesc(repairSessionId, nextTimeUUID(), cfs.getKeyspaceName(),
                                                      cfs.getTableName(), ranges);
 
         InetAddressAndPort host = InetAddressAndPort.getByName("127.0.0.2");
 
-        ActiveRepairService.instance.registerParentRepairSession(repairSessionId, host,
-                                                                 Collections.singletonList(cfs), desc.ranges, false, ActiveRepairService.UNREPAIRED_SSTABLE,
-                                                                 false, PreviewKind.NONE);
+        ActiveRepairService.instance().registerParentRepairSession(repairSessionId, host,
+                                                                   Collections.singletonList(cfs), desc.ranges, false, ActiveRepairService.UNREPAIRED_SSTABLE,
+                                                                   false, PreviewKind.NONE);
 
         final CompletableFuture<Message> outgoingMessageSink = registerOutgoingMessageSink();
-        Validator validator = new Validator(new ValidationState(desc, host), 0, true, false, PreviewKind.NONE);
+        Validator validator = new Validator(SharedContext.Global.instance, new ValidationState(Clock.Global.clock(), desc, host), 0, true, false, PreviewKind.NONE);
         ValidationManager.instance.submitValidation(cfs, validator);
 
         Message message = outgoingMessageSink.get(TEST_TIMEOUT, TimeUnit.SECONDS);

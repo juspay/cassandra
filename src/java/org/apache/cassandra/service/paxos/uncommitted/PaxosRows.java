@@ -21,6 +21,7 @@ package org.apache.cassandra.service.paxos.uncommitted;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
 
@@ -40,7 +41,6 @@ import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.DeserializationHelper;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
-import org.apache.cassandra.exceptions.UnknownTableException;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.SchemaConstants;
@@ -89,32 +89,38 @@ public class PaxosRows
         return getBallot(row, WRITE_PROMISE, Ballot.none());
     }
 
-    public static Accepted getAccepted(Row row)
+    public static Accepted getAccepted(Row row, long purgeBefore, long overrideTtlSeconds)
     {
         Cell ballotCell = row.getCell(PROPOSAL);
         if (ballotCell == null)
             return null;
 
         Ballot ballot = ballotCell.accessor().toBallot(ballotCell.value());
-        int version = getInt(row, PROPOSAL_VERSION, MessagingService.VERSION_30);
+        if (ballot.uuidTimestamp() < purgeBefore)
+            return null;
+
+        int version = getInt(row, PROPOSAL_VERSION, MessagingService.VERSION_40);
         PartitionUpdate update = getUpdate(row, PROPOSAL_UPDATE, version);
-        return ballotCell.isExpiring()
-               ? new AcceptedWithTTL(ballot, update, ballotCell.localDeletionTime())
-               : new Accepted(ballot, update);
+        if (overrideTtlSeconds > 0) return new AcceptedWithTTL(ballot, update, TimeUnit.MICROSECONDS.toSeconds(ballotCell.timestamp()) + overrideTtlSeconds);
+        else if (ballotCell.isExpiring()) return new AcceptedWithTTL(ballot, update, ballotCell.localDeletionTime());
+        else return new Accepted(ballot, update);
     }
 
-    public static Committed getCommitted(TableMetadata metadata, DecoratedKey partitionKey, Row row)
+    public static Committed getCommitted(TableMetadata metadata, DecoratedKey partitionKey, Row row, long purgeBefore, long overrideTtlSeconds)
     {
         Cell ballotCell = row.getCell(COMMIT);
         if (ballotCell == null)
             return Committed.none(partitionKey, metadata);
 
         Ballot ballot = ballotCell.accessor().toBallot(ballotCell.value());
-        int version = getInt(row, COMMIT_VERSION, MessagingService.VERSION_30);
+        if (ballot.uuidTimestamp() < purgeBefore)
+            return Committed.none(partitionKey, metadata);
+
+        int version = getInt(row, COMMIT_VERSION, MessagingService.VERSION_40);
         PartitionUpdate update = getUpdate(row, COMMIT_UPDATE, version);
-        return ballotCell.isExpiring()
-               ? new CommittedWithTTL(ballot, update, ballotCell.localDeletionTime())
-               : new Committed(ballot, update);
+        if (overrideTtlSeconds > 0) return new CommittedWithTTL(ballot, update, TimeUnit.MICROSECONDS.toSeconds(ballotCell.timestamp()) + overrideTtlSeconds);
+        else if (ballotCell.isExpiring()) return new CommittedWithTTL(ballot, update, ballotCell.localDeletionTime());
+        else return new Committed(ballot, update);
     }
 
     public static TableId getTableId(Row row)
@@ -140,22 +146,8 @@ public class PaxosRows
         Cell cell = row.getCell(cmeta);
         if (cell == null)
             throw new IllegalStateException();
-        try
-        {
-            return PartitionUpdate.fromBytes(cell.buffer(), version);
-        }
-        catch (RuntimeException e)
-        {
-            // the legacy behaviors of not deleting proposal_version along with proposal and proposal_ballot on commit,
-            // and accepting proposals younger than the most recent commit combined with the right sequence of tombstone
-            // purging and retention over a few compactions can result in 3.x format proposals without a proposal version
-            // value, causing deserialization to fail when looking up the table. So here we detect that and attempt to
-            // deserialize with the current version
-            if (e.getCause() instanceof UnknownTableException && version == MessagingService.VERSION_30)
-                return PartitionUpdate.fromBytes(cell.buffer(), MessagingService.current_version);
 
-            throw e;
-        }
+        return PartitionUpdate.fromBytes(cell.buffer(), version);
     }
 
     private static Ballot getBallot(Row row, ColumnMetadata cmeta)
@@ -190,7 +182,7 @@ public class PaxosRows
             if (!proposalValue.hasRemaining())
                 return true;
 
-            return isEmpty(proposalValue, DeserializationHelper.Flag.LOCAL, key);
+            return isEmpty(proposalValue, DeserializationHelper.Flag.LOCAL, key, proposalVersion);
         }
         catch (IOException e)
         {

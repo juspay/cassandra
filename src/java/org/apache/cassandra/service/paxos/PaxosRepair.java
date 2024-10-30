@@ -42,10 +42,6 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.exceptions.UnavailableException;
-import org.apache.cassandra.gms.ApplicationState;
-import org.apache.cassandra.gms.EndpointState;
-import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
@@ -55,9 +51,13 @@ import org.apache.cassandra.net.IVerbHandler;
 import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.RequestCallbackWithFailure;
+import org.apache.cassandra.repair.SharedContext;
+import org.apache.cassandra.schema.ReplicationParams;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.tcm.ClusterMetadata;
+import org.apache.cassandra.tcm.membership.NodeId;
 import org.apache.cassandra.utils.CassandraVersion;
 import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
@@ -65,6 +65,7 @@ import org.apache.cassandra.utils.MonotonicClock;
 
 import static org.apache.cassandra.concurrent.ExecutorFactory.Global.executorFactory;
 import static org.apache.cassandra.config.CassandraRelevantProperties.PAXOS_REPAIR_RETRY_TIMEOUT_IN_MS;
+import static org.apache.cassandra.config.CassandraRelevantProperties.SKIP_PAXOS_REPAIR_VERSION_VALIDATION;
 import static org.apache.cassandra.exceptions.RequestFailureReason.UNKNOWN;
 import static org.apache.cassandra.net.Verb.PAXOS2_REPAIR_REQ;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -287,7 +288,8 @@ public class PaxosRepair extends AbstractPaxosRepair
 
         public void run()
         {
-            Message<Request> message = Message.out(PAXOS2_REPAIR_REQ, new Request(partitionKey(), table));
+            Message<Request> message = Message.out(PAXOS2_REPAIR_REQ, new Request(partitionKey(), table), participants.isUrgent());
+
             for (int i = 0, size = participants.sizeOfPoll(); i < size ; ++i)
                 MessagingService.instance().sendWithCallback(message, participants.voter(i), this);
         }
@@ -545,7 +547,13 @@ public class PaxosRepair extends AbstractPaxosRepair
      */
     public static boolean hasSufficientLiveNodesForTopologyChange(Keyspace keyspace, Range<Token> range, Collection<InetAddressAndPort> liveEndpoints)
     {
-        return hasSufficientLiveNodesForTopologyChange(keyspace.getReplicationStrategy().getNaturalReplicasForToken(range.right).endpoints(),
+        ReplicationParams replication = keyspace.getMetadata().params.replication;
+        // Special case meta keyspace as it uses a custom partitioner/tokens, but the paxos table and repairs
+        // are based on the system partitioner
+        Collection<InetAddressAndPort> allEndpoints = replication.isMeta()
+                                                      ? ClusterMetadata.current().fullCMSMembers()
+                                                      : ClusterMetadata.current().placements.get(replication).reads.forRange(range).endpoints();
+        return hasSufficientLiveNodesForTopologyChange(allEndpoints,
                                                        liveEndpoints,
                                                        DatabaseDescriptor.getEndpointSnitch()::getDatacenter,
                                                        DatabaseDescriptor.paxoTopologyRepairNoDcChecks(),
@@ -570,7 +578,7 @@ public class PaxosRepair extends AbstractPaxosRepair
             Ballot latestWitnessed;
             Accepted acceptedButNotCommited;
             Committed committed;
-            int nowInSec = FBUtilities.nowInSeconds();
+            long nowInSec = FBUtilities.nowInSeconds();
             try (PaxosState state = PaxosState.get(request.partitionKey, request.table))
             {
                 PaxosState.Snapshot snapshot = state.current(nowInSec);
@@ -634,7 +642,7 @@ public class PaxosRepair extends AbstractPaxosRepair
         }
     }
 
-    private static volatile boolean SKIP_VERSION_VALIDATION = Boolean.getBoolean("cassandra.skip_paxos_repair_version_validation");
+    private static volatile boolean SKIP_VERSION_VALIDATION = SKIP_PAXOS_REPAIR_VERSION_VALIDATION.getBoolean();
 
     public static void setSkipPaxosRepairCompatibilityCheck(boolean v)
     {
@@ -658,45 +666,26 @@ public class PaxosRepair extends AbstractPaxosRepair
         return (version.major == 4 && version.minor > 0) || version.major > 4;
     }
 
-    static String getPeerVersion(InetAddressAndPort peer)
+    static boolean validatePeerCompatibility(ClusterMetadata metadata, Replica peer)
     {
-        EndpointState epState = Gossiper.instance.getEndpointStateForEndpoint(peer);
-        if (epState == null)
-            return null;
-
-        VersionedValue value = epState.getApplicationState(ApplicationState.RELEASE_VERSION);
-        if (value == null)
-            return null;
-
-        try
-        {
-            return value.value;
-        }
-        catch (IllegalArgumentException e)
-        {
-            return null;
-        }
-    }
-
-    static boolean validatePeerCompatibility(Replica peer)
-    {
-        String versionString = getPeerVersion(peer.endpoint());
-        CassandraVersion version = versionString != null ? new CassandraVersion(versionString) : null;
+        NodeId nodeId = metadata.directory.peerId(peer.endpoint());
+        CassandraVersion version = metadata.directory.version(nodeId).cassandraVersion;
         boolean result = validateVersionCompatibility(version);
         if (!result)
-            logger.info("PaxosRepair isn't supported by {} on version {}", peer, versionString);
+            logger.info("PaxosRepair isn't supported by {} on version {}", peer, version);
         return result;
     }
 
-    static boolean validatePeerCompatibility(TableMetadata table, Range<Token> range)
+    static boolean validatePeerCompatibility(SharedContext ctx, TableMetadata table, Range<Token> range)
     {
-        Participants participants = Participants.get(table, range.right, ConsistencyLevel.SERIAL);
-        return Iterables.all(participants.all, PaxosRepair::validatePeerCompatibility);
+        ClusterMetadata metadata = ClusterMetadata.current();
+        Participants participants = Participants.get(metadata, table, range.right, ConsistencyLevel.SERIAL, r -> ctx.failureDetector().isAlive(r.endpoint()));
+        return Iterables.all(participants.all, (participant) -> validatePeerCompatibility(metadata, participant));
     }
 
-    public static boolean validatePeerCompatibility(TableMetadata table, Collection<Range<Token>> ranges)
+    public static boolean validatePeerCompatibility(SharedContext ctx, TableMetadata table, Collection<Range<Token>> ranges)
     {
-        return Iterables.all(ranges, range -> validatePeerCompatibility(table, range));
+        return Iterables.all(ranges, range -> validatePeerCompatibility(ctx, table, range));
     }
 
     public static void shutdownAndWait(long timeout, TimeUnit units) throws InterruptedException, TimeoutException

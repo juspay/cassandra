@@ -26,12 +26,13 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import org.apache.cassandra.distributed.shared.WithProperties;
+import org.apache.cassandra.ServerTestUtils;
 import org.mindrot.jbcrypt.BCrypt;
 
 import com.datastax.driver.core.Authenticator;
 import com.datastax.driver.core.EndPoint;
 import com.datastax.driver.core.PlainTextAuthProvider;
-import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -39,19 +40,20 @@ import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.transport.messages.AuthenticateMessage;
 
 import static org.apache.cassandra.auth.AuthTestUtils.ALL_ROLES;
 import static org.apache.cassandra.auth.CassandraRoleManager.DEFAULT_SUPERUSER_PASSWORD;
 import static org.apache.cassandra.auth.CassandraRoleManager.getGensaltLogRounds;
 import static org.apache.cassandra.auth.PasswordAuthenticator.SaslNegotiator;
 import static org.apache.cassandra.auth.PasswordAuthenticator.checkpw;
+import static org.apache.cassandra.config.CassandraRelevantProperties.AUTH_BCRYPT_GENSALT_LOG2_ROUNDS;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mindrot.jbcrypt.BCrypt.gensalt;
 import static org.mindrot.jbcrypt.BCrypt.hashpw;
-
-import static org.apache.cassandra.auth.CassandraRoleManager.GENSALT_LOG2_ROUNDS_PROPERTY;
 
 public class PasswordAuthenticatorTest extends CQLTester
 {
@@ -60,9 +62,9 @@ public class PasswordAuthenticatorTest extends CQLTester
     @BeforeClass
     public static void setupClass() throws Exception
     {
-        SchemaLoader.loadSchema();
+        ServerTestUtils.prepareServerNoRegister();
         DatabaseDescriptor.daemonInitialization();
-        StorageService.instance.initServer(0);
+        StorageService.instance.initServer();
     }
 
     @Before
@@ -119,19 +121,10 @@ public class PasswordAuthenticatorTest extends CQLTester
 
     private void executeSaltRoundsPropertyTest(Integer rounds)
     {
-        String oldProperty = System.getProperty(GENSALT_LOG2_ROUNDS_PROPERTY);
-        try
+        try (WithProperties properties = new WithProperties().set(AUTH_BCRYPT_GENSALT_LOG2_ROUNDS, rounds))
         {
-            System.setProperty(GENSALT_LOG2_ROUNDS_PROPERTY, rounds.toString());
             getGensaltLogRounds();
-            Assert.fail("Property " + GENSALT_LOG2_ROUNDS_PROPERTY + " must be in interval [4,30]");
-        }
-        finally
-        {
-            if (oldProperty != null)
-                System.setProperty(GENSALT_LOG2_ROUNDS_PROPERTY, oldProperty);
-            else
-                System.clearProperty(GENSALT_LOG2_ROUNDS_PROPERTY);
+            Assert.fail("Property " + AUTH_BCRYPT_GENSALT_LOG2_ROUNDS.getKey() + " must be in interval [4,30]");
         }
     }
 
@@ -206,5 +199,12 @@ public class PasswordAuthenticatorTest extends CQLTester
     {
         Map<String, String> cacheEntries = authenticator.bulkLoader().get();
         assertTrue(cacheEntries.isEmpty());
+    }
+
+    @Test
+    public void testDefaultAuthenticateMessage()
+    {
+        AuthenticateMessage authenticateMessage = authenticator.getAuthenticateMessage(null);
+        assertThat(authenticateMessage.authenticator).isEqualTo(PasswordAuthenticator.class.getName());
     }
 }

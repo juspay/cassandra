@@ -25,7 +25,6 @@ import java.util.stream.Collectors;
 import com.google.common.collect.ImmutableList;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.datastax.driver.core.ResultSet;
@@ -38,18 +37,14 @@ import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.security.SSLFactory;
 import org.yaml.snakeyaml.introspector.Property;
 
+import static org.apache.cassandra.config.EncryptionOptions.ClientAuth.REQUIRED;
+
 public class SettingsTableTest extends CQLTester
 {
     private static final String KS_NAME = "vts";
 
     private Config config;
     private SettingsTable table;
-
-    @BeforeClass
-    public static void setUpClass()
-    {
-        CQLTester.setUpClass();
-    }
 
     @Before
     public void config()
@@ -62,9 +57,17 @@ public class SettingsTableTest extends CQLTester
         config.cache_load_timeout = new DurationSpec.IntSecondsBound(0);
         config.commitlog_sync_group_window = new DurationSpec.IntMillisecondsBound(0);
         config.credentials_update_interval = null;
+        config.data_file_directories = new String[] {"/my/data/directory", "/another/data/directory"};
         table = new SettingsTable(KS_NAME, config);
         VirtualKeyspaceRegistry.instance.register(new VirtualKeyspace(KS_NAME, ImmutableList.of(table)));
         disablePreparedReuseForTest();
+    }
+
+    @Test
+    public void testArray() throws Throwable
+    {
+        Row one = executeNet("SELECT value FROM vts.settings WHERE name = 'data_file_directories'").one();
+        Assert.assertEquals("[/my/data/directory, /another/data/directory]", one.getString("value"));
     }
 
     @Test
@@ -79,7 +82,7 @@ public class SettingsTableTest extends CQLTester
             String name = r.getString("name");
             Property prop = SettingsTable.PROPERTIES.get(name);
             if (prop != null) // skip overrides
-                Assert.assertEquals(getValue(prop), r.getString("value"));
+                Assert.assertEquals(table.getValue(prop), r.getString("value"));
         }
         Assert.assertTrue(SettingsTable.PROPERTIES.size() <= i);
     }
@@ -92,7 +95,7 @@ public class SettingsTableTest extends CQLTester
             String name = e.getKey();
             Property prop = e.getValue();
             String q = "SELECT * FROM vts.settings WHERE name = '"+name+'\'';
-            assertRowsNet(executeNet(q), new Object[] { name, getValue(prop) });
+            assertRowsNet(executeNet(q), new Object[] { name, table.getValue(prop) });
         }
     }
 
@@ -144,14 +147,6 @@ public class SettingsTableTest extends CQLTester
         assertRowsNet(executeNet(q), new Object[] {"credentials_update_interval", null});
         q = "SELECT * FROM vts.settings WHERE name = 'credentials_update_interval_in_ms';";
         assertRowsNet(executeNet(q), new Object[] {"credentials_update_interval_in_ms", "-1"});
-    }
-
-    private String getValue(Property prop)
-    {
-        Object v = prop.get(config);
-        if (v != null)
-            return v.toString();
-        return null;
     }
 
     private void check(String setting, String expected) throws Throwable
@@ -208,7 +203,7 @@ public class SettingsTableTest extends CQLTester
 
         // name doesn't match yaml
         check(pre + "client_auth", "false");
-        config.server_encryption_options = config.server_encryption_options.withRequireClientAuth(true);
+        config.server_encryption_options = config.server_encryption_options.withRequireClientAuth(REQUIRED);
         check(pre + "client_auth", "true");
 
         // name doesn't match yaml

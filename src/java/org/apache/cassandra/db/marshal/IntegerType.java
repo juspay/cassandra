@@ -23,8 +23,9 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.cql3.Constants;
-import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.terms.Term;
+import org.apache.cassandra.cql3.functions.ArgumentDeserializer;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.IntegerSerializer;
 import org.apache.cassandra.serializers.MarshalException;
@@ -37,6 +38,8 @@ import org.apache.cassandra.utils.bytecomparable.ByteSourceInverse;
 public final class IntegerType extends NumberType<BigInteger>
 {
     public static final IntegerType instance = new IntegerType();
+
+    private static final ArgumentDeserializer ARGUMENT_DESERIALIZER = new DefaultArgumentDeserializer(instance);
 
     private static final ByteBuffer MASKED_VALUE = instance.decompose(BigInteger.ZERO);
 
@@ -77,6 +80,13 @@ public final class IntegerType extends NumberType<BigInteger>
 
     IntegerType() {super(ComparisonType.CUSTOM);}/* singleton */
 
+    @Override
+    public boolean allowsEmpty()
+    {
+        return true;
+    }
+
+    @Override
     public boolean isEmptyValueMeaningless()
     {
         return true;
@@ -150,8 +160,8 @@ public final class IntegerType extends NumberType<BigInteger>
      *
      * In the current format we represent it:
      *    directly as varint, if the length is 6 or smaller (the encoding has non-00/FF first byte)
-     *    <signbyte><length as unsigned integer - 7><7 or more bytes>, otherwise
-     * where <signbyte> is 00 for negative numbers and FF for positive ones, and the length's bytes are inverted if
+     *    {@code <signbyte><length as unsigned integer - 7><7 or more bytes>}, otherwise
+     * where {@code <signbyte>} is 00 for negative numbers and FF for positive ones, and the length's bytes are inverted if
      * the number is negative (so that longer length sorts smaller).
      *
      * Because we present the sign separately, we don't need to include 0x00 prefix for positive integers whose first
@@ -246,8 +256,8 @@ public final class IntegerType extends NumberType<BigInteger>
      * Constructs a full-form byte-comparable representation of the number in the current format.
      *
      * This contains:
-     *    <signbyte><length as unsigned integer - 7><7 or more bytes>, otherwise
-     * where <signbyte> is 00 for negative numbers and FF for positive ones, and the length's bytes are inverted if
+     *    {@code <signbyte><length as unsigned integer - 7><7 or more bytes>}, otherwise
+     * where {@code <signbyte>} is 00 for negative numbers and FF for positive ones, and the length's bytes are inverted if
      * the number is negative (so that longer length sorts smaller).
      *
      * Because we present the sign separately, we don't need to include 0x00 prefix for positive integers whose first
@@ -291,7 +301,7 @@ public final class IntegerType extends NumberType<BigInteger>
     /**
      * Constructs a byte-comparable representation of the number in the legacy format.
      * We represent it as
-     *    <zero or more length_bytes where length = 128> <length_byte> <first_significant_byte> <zero or more bytes>
+     *    {@code <zero or more length_bytes where length = 128> <length_byte> <first_significant_byte> <zero or more bytes>}
      * where a length_byte is:
      *    - 0x80 + (length - 1) for positive numbers (so that longer length sorts bigger)
      *    - 0x7F - (length - 1) for negative numbers (so that longer length sorts smaller)
@@ -497,79 +507,57 @@ public final class IntegerType extends NumberType<BigInteger>
     }
 
     @Override
-    protected int toInt(ByteBuffer value)
+    public ArgumentDeserializer getArgumentDeserializer()
     {
-        throw new UnsupportedOperationException();
+        return ARGUMENT_DESERIALIZER;
     }
 
-    @Override
-    protected float toFloat(ByteBuffer value)
+    private BigInteger toBigInteger(Number number)
     {
-        throw new UnsupportedOperationException();
+        if (number instanceof BigInteger)
+            return (BigInteger) number;
+
+        return BigInteger.valueOf(number.longValue());
     }
 
-    @Override
-    protected long toLong(ByteBuffer value)
+    public ByteBuffer add(Number left, Number right)
     {
-        throw new UnsupportedOperationException();
+        return decompose(toBigInteger(left).add(toBigInteger(right)));
     }
 
-    @Override
-    protected double toDouble(ByteBuffer value)
+    public ByteBuffer substract(Number left, Number right)
     {
-        throw new UnsupportedOperationException();
+        return decompose(toBigInteger(left).subtract(toBigInteger(right)));
     }
 
-    @Override
-    protected BigInteger toBigInteger(ByteBuffer value)
+    public ByteBuffer multiply(Number left, Number right)
     {
-        return compose(value);
+        return decompose(toBigInteger(left).multiply(toBigInteger(right)));
     }
 
-    @Override
-    protected BigDecimal toBigDecimal(ByteBuffer value)
+    public ByteBuffer divide(Number left, Number right)
     {
-        return new BigDecimal(compose(value));
+        return decompose(toBigInteger(left).divide(toBigInteger(right)));
     }
 
-    public ByteBuffer add(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
+    public ByteBuffer mod(Number left, Number right)
     {
-        return decompose(leftType.toBigInteger(left).add(rightType.toBigInteger(right)));
+        return decompose(toBigInteger(left).remainder(toBigInteger(right)));
     }
 
-    public ByteBuffer substract(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return decompose(leftType.toBigInteger(left).subtract(rightType.toBigInteger(right)));
-    }
-
-    public ByteBuffer multiply(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return decompose(leftType.toBigInteger(left).multiply(rightType.toBigInteger(right)));
-    }
-
-    public ByteBuffer divide(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return decompose(leftType.toBigInteger(left).divide(rightType.toBigInteger(right)));
-    }
-
-    public ByteBuffer mod(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return decompose(leftType.toBigInteger(left).remainder(rightType.toBigInteger(right)));
-    }
-
-    public ByteBuffer negate(ByteBuffer input)
+    public ByteBuffer negate(Number input)
     {
         return decompose(toBigInteger(input).negate());
     }
 
     @Override
-    public ByteBuffer abs(ByteBuffer input)
+    public ByteBuffer abs(Number input)
     {
         return decompose(toBigInteger(input).abs());
     }
 
     @Override
-    public ByteBuffer exp(ByteBuffer input)
+    public ByteBuffer exp(Number input)
     {
         BigInteger bi = toBigInteger(input);
         BigDecimal bd = new BigDecimal(bi);
@@ -579,7 +567,7 @@ public final class IntegerType extends NumberType<BigInteger>
     }
 
     @Override
-    public ByteBuffer log(ByteBuffer input)
+    public ByteBuffer log(Number input)
     {
         BigInteger bi = toBigInteger(input);
         if (bi.compareTo(BigInteger.ZERO) <= 0) throw new ArithmeticException("Natural log of number zero or less");
@@ -590,7 +578,7 @@ public final class IntegerType extends NumberType<BigInteger>
     }
 
     @Override
-    public ByteBuffer log10(ByteBuffer input)
+    public ByteBuffer log10(Number input)
     {
         BigInteger bi = toBigInteger(input);
         if (bi.compareTo(BigInteger.ZERO) <= 0) throw new ArithmeticException("Log10 of number zero or less");
@@ -601,9 +589,9 @@ public final class IntegerType extends NumberType<BigInteger>
     }
 
     @Override
-    public ByteBuffer round(ByteBuffer input)
+    public ByteBuffer round(Number input)
     {
-        return ByteBufferUtil.clone(input);
+        return decompose(toBigInteger(input));
     }
 
     @Override

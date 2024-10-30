@@ -31,7 +31,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import com.vdurmont.semver4j.Semver;
-
+import org.apache.cassandra.config.CassandraRelevantProperties;
 import org.apache.cassandra.distributed.api.Feature;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.distributed.shared.NetworkTopology;
@@ -42,12 +42,15 @@ import org.apache.cassandra.locator.HttpSeedProvider;
 public class InstanceConfig implements IInstanceConfig
 {
     public final int num;
+    private final int jmxPort;
+
     public int num() { return num; }
 
     private final NetworkTopology networkTopology;
     public NetworkTopology networkTopology() { return networkTopology; }
 
-    public final UUID hostId;
+    private volatile UUID hostId;
+    public void setHostId(UUID hostId) { this.hostId = hostId; }
     public UUID hostId() { return hostId; }
     private final Map<String, Object> params = new TreeMap<>();
     private final Map<String, Object> dtestParams = new TreeMap<>();
@@ -71,7 +74,8 @@ public class InstanceConfig implements IInstanceConfig
                            String cdc_raw_directory,
                            Collection<String> initial_token,
                            int storage_port,
-                           int native_transport_port)
+                           int native_transport_port,
+                           int jmx_port)
     {
         this.num = num;
         this.networkTopology = networkTopology;
@@ -97,12 +101,14 @@ public class InstanceConfig implements IInstanceConfig
                 .set("memtable_flush_writers", 1)
                 .set("concurrent_compactors", 1)
                 .set("memtable_heap_space", "10MiB")
-                .set("commitlog_sync", "batch")
+                .set("commitlog_sync", "periodic")
+                .set("commitlog_sync_period_in_ms", 10000)
                 .set("storage_port", storage_port)
                 .set("native_transport_port", native_transport_port)
                 .set("endpoint_snitch", DistributedTestSnitch.class.getName())
                 .set("seed_provider", new ParameterizedClass(HttpSeedProvider.class.getName(),
-                        Collections.singletonMap("seeds", seedIp + ":" + seedPort)))
+                        Collections.singletonMap("seeds", seedIp + ':' + seedPort)))
+                .set("discovery_timeout", "3s")
                 // required settings for dtest functionality
                 .set("diagnostic_events_enabled", true)
                 .set("auto_bootstrap", false)
@@ -110,9 +116,57 @@ public class InstanceConfig implements IInstanceConfig
                 .set("index_summary_capacity", "50MiB")
                 .set("counter_cache_size", "50MiB")
                 .set("key_cache_size", "50MiB")
-                // legacy parameters
-                .forceSet("commitlog_sync_batch_window_in_ms", "1");
+                .set("commitlog_disk_access_mode", "legacy");
+        if (CassandraRelevantProperties.DTEST_JVM_DTESTS_USE_LATEST.getBoolean())
+        {
+            // TODO: make this load latest_diff.yaml or cassandra_latest.yaml
+            this.set("memtable", Map.of(
+                "configurations", Map.of(
+                    "default", Map.of(
+                        "class_name", "TrieMemtable"))))
+
+                .set("batchlog_endpoint_strategy", "dynamic_remote")
+
+                .set("authenticator", Map.of("class_name", "AllowAllAuthenticator"))
+                .set("authorizer", Map.of("class_name", "AllowAllAuthorizer"))
+                .set("role_manager", Map.of("class_name", "CassandraRoleManager"))
+                .set("network_authorizer", Map.of("class_name", "AllowAllNetworkAuthorizer"))
+
+                .set("key_cache_size", "0MiB")
+
+                .set("memtable_allocation_type", "offheap_objects")
+
+                .set("commitlog_disk_access_mode", "auto")
+
+                .set("trickle_fsync", "true")
+
+                .set("sstable", Map.of(
+                    "selected_format", "bti"))
+
+                .set("column_index_size", "4KiB")
+
+                .set("default_compaction", Map.of(
+                    "class_name", "UnifiedCompactionStrategy",
+                    "parameters", Map.of(
+                        "scaling_parameters", "T4",
+                        "max_sstables_to_compact", "64",
+                        "target_sstable_size", "1GiB",
+                        "sstable_growth","0.3333333333333333",
+                        "min_sstable_size", "100MiB")))
+
+                .set("concurrent_compactors", "8")
+
+                .set("uuid_sstable_identifiers_enabled", "true")
+
+                .set("stream_entire_sstables", "true")
+
+                .set("default_secondary_index", "sai")
+                .set("default_secondary_index_enabled", "true")
+
+                .set("storage_compatibility_mode", "NONE");
+        }
         this.featureFlags = EnumSet.noneOf(Feature.class);
+        this.jmxPort = jmx_port;
     }
 
     private InstanceConfig(InstanceConfig copy)
@@ -124,6 +178,7 @@ public class InstanceConfig implements IInstanceConfig
         this.hostId = copy.hostId;
         this.featureFlags = copy.featureFlags;
         this.broadcastAddressAndPort = copy.broadcastAddressAndPort;
+        this.jmxPort = copy.jmxPort;
     }
 
     @Override
@@ -166,6 +221,12 @@ public class InstanceConfig implements IInstanceConfig
     public String localDatacenter()
     {
         return networkTopology().localDC(broadcastAddress());
+    }
+
+    @Override
+    public int jmxPort()
+    {
+        return this.jmxPort;
     }
 
     public InstanceConfig with(Feature featureFlag)
@@ -252,14 +313,15 @@ public class InstanceConfig implements IInstanceConfig
                                           Collection<String> tokens,
                                           int datadirCount)
     {
+        int seedNode = provisionStrategy.seedNodeNum();
         return new InstanceConfig(nodeNum,
                                   networkTopology,
                                   provisionStrategy.ipAddress(nodeNum),
                                   provisionStrategy.ipAddress(nodeNum),
                                   provisionStrategy.ipAddress(nodeNum),
                                   provisionStrategy.ipAddress(nodeNum),
-                                  provisionStrategy.seedIp(),
-                                  provisionStrategy.seedPort(),
+                                  provisionStrategy.ipAddress(seedNode),
+                                  provisionStrategy.storagePort(seedNode),
                                   String.format("%s/node%d/saved_caches", root, nodeNum),
                                   datadirs(datadirCount, root, nodeNum),
                                   String.format("%s/node%d/commitlog", root, nodeNum),
@@ -267,7 +329,8 @@ public class InstanceConfig implements IInstanceConfig
                                   String.format("%s/node%d/cdc", root, nodeNum),
                                   tokens,
                                   provisionStrategy.storagePort(nodeNum),
-                                  provisionStrategy.nativeTransportPort(nodeNum));
+                                  provisionStrategy.nativeTransportPort(nodeNum),
+                                  provisionStrategy.jmxPort(nodeNum));
     }
 
     private static String[] datadirs(int datadirCount, Path root, int nodeNum)

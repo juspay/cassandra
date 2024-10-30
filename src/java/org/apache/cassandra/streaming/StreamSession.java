@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,8 +40,10 @@ import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 
 import io.netty.channel.Channel;
@@ -56,9 +59,10 @@ import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.CompactionStrategyManager;
+import org.apache.cassandra.db.lifecycle.TransactionAlreadyCompletedException;
+import org.apache.cassandra.dht.OwnedRanges;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.gms.*;
 import org.apache.cassandra.io.util.File;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.RangesAtEndpoint;
@@ -66,6 +70,7 @@ import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.metrics.StreamingMetrics;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.service.ActiveRepairService;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.streaming.async.StreamingMultiplexedChannel;
 import org.apache.cassandra.streaming.messages.*;
 import org.apache.cassandra.utils.FBUtilities;
@@ -75,6 +80,7 @@ import org.apache.cassandra.utils.TimeUUID;
 import org.apache.cassandra.utils.concurrent.FutureCombiner;
 
 import static com.google.common.collect.Iterables.all;
+import static org.apache.cassandra.config.CassandraRelevantProperties.CASSANDRA_STREAMING_DEBUG_STACKTRACE_LIMIT;
 import static org.apache.cassandra.utils.Clock.Global.nanoTime;
 import static org.apache.cassandra.locator.InetAddressAndPort.hostAddressAndPort;
 import static org.apache.cassandra.utils.FBUtilities.getBroadcastAddressAndPort;
@@ -110,7 +116,7 @@ import static org.apache.cassandra.utils.FBUtilities.getBroadcastAddressAndPort;
  *
  * 3. Streaming phase
  *
- *   (a) The streaming phase is started at each node by calling {@link StreamSession#startStreamingFiles(boolean)}.
+ *   (a) The streaming phase is started at each node by calling {@link StreamSession#startStreamingFiles(PrepareDirection)}.
  *       This will send, sequentially on each outbound streaming connection (see {@link StreamingMultiplexedChannel}),
  *       an {@link OutgoingStreamMessage} for each stream in each of the {@link StreamTransferTask}.
  *       Each {@link OutgoingStreamMessage} consists of a {@link StreamMessageHeader} that contains metadata about
@@ -154,9 +160,10 @@ import static org.apache.cassandra.utils.FBUtilities.getBroadcastAddressAndPort;
  * (via {@link org.apache.cassandra.net.MessagingService}, while the actual files themselves are sent by a special
  * "streaming" connection type. See {@link StreamingMultiplexedChannel} for details. Because of the asynchronous
  */
-public class StreamSession implements IEndpointStateChangeSubscriber
+public class StreamSession
 {
     private static final Logger logger = LoggerFactory.getLogger(StreamSession.class);
+    private static final int DEBUG_STACKTRACE_LIMIT = CASSANDRA_STREAMING_DEBUG_STACKTRACE_LIMIT.getInt();
 
     public enum PrepareDirection { SEND, ACK }
 
@@ -199,9 +206,12 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     // receiving peer's CompleteMessage.
     private boolean maybeCompleted = false;
     private Future<?> closeFuture;
+    private final Object closeFutureLock = new Object();
 
     private final TimeUUID pendingRepair;
     private final PreviewKind previewKind;
+
+    public String failureReason;
 
 /**
  * State Transition:
@@ -394,7 +404,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                                                               getPendingRepair(),
                                                               getPreviewKind());
 
-            channel.sendControlMessage(message).sync();
+            sendControlMessage(message).sync();
             onInitializationComplete();
         }
         catch (Exception e)
@@ -514,35 +524,52 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         }
     }
 
-    private synchronized Future<?> closeSession(State finalState)
+    private Future<?> closeSession(State finalState)
     {
-        // it's session is already closed
-        if (closeFuture != null)
-            return closeFuture;
+        return closeSession(finalState, null);
+    }
 
-        state(finalState);
-
-        List<Future<?>> futures = new ArrayList<>();
-
-        // ensure aborting the tasks do not happen on the network IO thread (read: netty event loop)
-        // as we don't want any blocking disk IO to stop the network thread
-        if (finalState == State.FAILED || finalState == State.ABORTED)
-            futures.add(ScheduledExecutors.nonPeriodicTasks.submit(this::abortTasks));
-
-        // Channels should only be closed by the initiator; but, if this session closed
-        // due to failure, channels should be always closed regardless, even if this is not the initator.
-        if (!isFollower || state != State.COMPLETE)
+    private Future<?> closeSession(State finalState, String failureReason)
+    {
+        // Keep a separate lock on the closeFuture so that we create it once and only once.
+        // Cannot use the StreamSession monitor here as StreamDeserializingTask/StreamSession.messageReceived
+        // holds it while calling syncUninterruptibly on sendMessage which can trigger a closeSession in
+        // the Netty event loop on error and cause a deadlock.
+        synchronized (closeFutureLock)
         {
-            logger.debug("[Stream #{}] Will close attached inbound {} and outbound {} channels", planId(), inbound, outbound);
-            inbound.values().forEach(channel -> futures.add(channel.close()));
-            outbound.values().forEach(channel -> futures.add(channel.close()));
+            if (closeFuture != null)
+                return closeFuture;
+
+            closeFuture = ScheduledExecutors.nonPeriodicTasks.submit(() -> {
+                synchronized (this) {
+                    state(finalState);
+                    //this refers to StreamInfo
+                    this.failureReason = failureReason;
+
+                    sink.onClose(peer);
+                    // closed before init?
+                    if (streamResult != null)
+                        streamResult.handleSessionComplete(this);
+                }}).flatMap(ignore -> {
+                    List<Future<?>> futures = new ArrayList<>();
+                    // ensure aborting the tasks do not happen on the network IO thread (read: netty event loop)
+                    // as we don't want any blocking disk IO to stop the network thread
+                    if (finalState == State.FAILED || finalState == State.ABORTED)
+                        futures.add(ScheduledExecutors.nonPeriodicTasks.submit(this::abortTasks));
+
+                    // Channels should only be closed by the initiator; but, if this session closed
+                    // due to failure, channels should be always closed regardless, even if this is not the initator.
+                    if (!isFollower || state != State.COMPLETE)
+                    {
+                        logger.debug("[Stream #{}] Will close attached inbound {} and outbound {} channels", planId(), inbound, outbound);
+                        inbound.values().forEach(channel -> futures.add(channel.close()));
+                        outbound.values().forEach(channel -> futures.add(channel.close()));
+                    }
+                    return FutureCombiner.allOf(futures);
+                });
+
+            return closeFuture;
         }
-
-        sink.onClose(peer);
-        streamResult.handleSessionComplete(this);
-        closeFuture = FutureCombiner.allOf(futures);
-
-        return closeFuture;
     }
 
     private void abortTasks()
@@ -593,6 +620,16 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     public boolean isSuccess()
     {
         return state == State.COMPLETE;
+    }
+
+    /**
+     * Return if this session was failed or aborted
+     *
+     * @return true if session was failed or aborted
+     */
+    public boolean isFailedOrAborted()
+    {
+        return state == State.FAILED || state == State.ABORTED;
     }
 
     public synchronized void messageReceived(StreamMessage message)
@@ -656,7 +693,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             prepare.summaries.add(task.getSummary());
         }
 
-        channel.sendControlMessage(prepare).syncUninterruptibly();
+        sendControlMessage(prepare).syncUninterruptibly();
     }
 
     /**
@@ -673,7 +710,6 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             if (state.finalState)
             {
                 logger.debug("[Stream #{}] Socket closed after session completed with state {}", planId(), state);
-
                 return null;
             }
             else
@@ -682,9 +718,17 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                              planId(),
                              peer.getHostAddressAndPort(),
                              e);
-
-                return closeSession(State.FAILED);
+                return closeSession(State.FAILED, "Failed because there was an " + e.getClass().getCanonicalName() + " with state=" + state.name());
             }
+        }
+        else if (e instanceof TransactionAlreadyCompletedException && isFailedOrAborted())
+        {
+            // StreamDeserializer threads may actively be writing SSTables when the stream
+            // is failed or canceled, which aborts the lifecycle transaction and throws an exception
+            // when any new SSTable is added.  Since the stream has already failed, suppress
+            // extra streaming log failure messages.
+            logger.debug("Stream lifecycle transaction already completed after stream failure (ignore)", e);
+            return null;
         }
 
         logError(e);
@@ -692,10 +736,11 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         if (channel.connected())
         {
             state(State.FAILED); // make sure subsequent error handling sees the session in a final state 
-            channel.sendControlMessage(new SessionFailedMessage()).awaitUninterruptibly();
+            sendControlMessage(new SessionFailedMessage()).awaitUninterruptibly();
         }
-
-        return closeSession(State.FAILED);
+        StringBuilder failureReason = new StringBuilder("Failed because of an unknown exception\n");
+        boundStackTrace(e, DEBUG_STACKTRACE_LIMIT, failureReason);
+        return closeSession(State.FAILED, failureReason.toString());
     }
 
     private void logError(Throwable e)
@@ -720,19 +765,23 @@ public class StreamSession implements IEndpointStateChangeSubscriber
 
     /**
      * Prepare this session for sending/receiving files.
+     *
+     * @return the prepare future for testing
      */
-    public void prepare(Collection<StreamRequest> requests, Collection<StreamSummary> summaries)
+    public Future<Exception> prepare(Collection<StreamRequest> requests, Collection<StreamSummary> summaries)
     {
         // prepare tasks
         state(State.PREPARING);
-        ScheduledExecutors.nonPeriodicTasks.execute(() -> {
+        return ScheduledExecutors.nonPeriodicTasks.submit(() -> {
             try
             {
                 prepareAsync(requests, summaries);
+                return null;
             }
             catch (Exception e)
             {
                 onError(e);
+                return e;
             }
         });
     }
@@ -746,12 +795,12 @@ public class StreamSession implements IEndpointStateChangeSubscriber
      * Finish preparing the session. This method is blocking (memtables are flushed in {@link #addTransferRanges}),
      * so the logic should not execute on the main IO thread (read: netty event loop).
      */
-    private void prepareAsync(Collection<StreamRequest> requests, Collection<StreamSummary> summaries)
+    @VisibleForTesting
+    void prepareAsync(Collection<StreamRequest> requests, Collection<StreamSummary> summaries)
     {
         if (StreamOperation.REPAIR == streamOperation())
             checkAvailableDiskSpaceAndCompactions(summaries);
-        for (StreamRequest request : requests)
-            addTransferRanges(request.keyspace, RangesAtEndpoint.concat(request.full, request.transientReplicas), request.columnFamilies, true); // always flush on stream request
+        processStreamRequests(requests);
         for (StreamSummary summary : summaries)
             prepareReceiving(summary);
 
@@ -768,7 +817,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         // see CASSANDRA-17116
         if (isPreview())
             state(State.COMPLETE);
-        channel.sendControlMessage(prepareSynAck).syncUninterruptibly();
+        sendControlMessage(prepareSynAck).syncUninterruptibly();
 
         if (isPreview())
             completePreview();
@@ -787,7 +836,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
 
             // only send the (final) ACK if we are expecting the peer to send this node (the initiator) some files
             if (!isPreview())
-                channel.sendControlMessage(new PrepareAckMessage()).syncUninterruptibly();
+                sendControlMessage(new PrepareAckMessage()).syncUninterruptibly();
         }
 
         if (isPreview())
@@ -803,6 +852,36 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         startStreamingFiles(PrepareDirection.ACK);
     }
 
+    protected Future<?> sendControlMessage(StreamMessage message)
+    {
+        return channel.sendControlMessage(message);
+    }
+
+    private void processStreamRequests(Collection<StreamRequest> requests)
+    {
+        List<StreamRequest> rejectedRequests = new ArrayList<>();
+
+        // group requests by keyspace
+        Multimap<String, StreamRequest> requestsByKeyspace = ArrayListMultimap.create();
+        requests.forEach(r -> requestsByKeyspace.put(r.keyspace, r));
+
+        requestsByKeyspace.asMap().forEach((ks, reqs) ->
+                                           {
+                                               OwnedRanges ownedRanges = StorageService.instance.getNormalizedLocalRanges(ks, getBroadcastAddressAndPort());
+
+                                               reqs.forEach(req ->
+                                                            {
+                                                                RangesAtEndpoint allRangesAtEndpoint = RangesAtEndpoint.concat(req.full, req.transientReplicas);
+                                                                if (ownedRanges.validateRangeRequest(allRangesAtEndpoint.ranges(), "Stream #" + planId(), "stream request", peer))
+                                                                    addTransferRanges(req.keyspace, allRangesAtEndpoint, req.columnFamilies, true); // always flush on stream request
+                                                                else
+                                                                    rejectedRequests.add(req);
+                                                            });
+                                           });
+
+        if (!rejectedRequests.isEmpty())
+            throw new StreamRequestOutOfTokenRangeException(rejectedRequests);
+    }
     /**
      * In the case where we have an error checking disk space we allow the Operation to continue.
      * In the case where we do _not_ have available space, this method raises a RTE.
@@ -871,7 +950,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             Set<FileStore> allWriteableFileStores = cfs.getDirectories().allFileStores(fileStoreMapper);
             if (allWriteableFileStores.isEmpty())
             {
-                logger.error("[Stream #{}] Could not get any writeable FileStores for {}.{}", planId, cfs.keyspace.getName(), cfs.getTableName());
+                logger.error("[Stream #{}] Could not get any writeable FileStores for {}.{}", planId, cfs.getKeyspaceName(), cfs.getTableName());
                 continue;
             }
             allFileStores.addAll(allWriteableFileStores);
@@ -896,7 +975,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                          newStreamBytesToWritePerFileStore,
                          perTableIdIncomingBytes.keySet().stream()
                                                 .map(ColumnFamilyStore::getIfExists).filter(Objects::nonNull)
-                                                .map(cfs -> cfs.keyspace.getName() + '.' + cfs.name)
+                                                .map(cfs -> cfs.getKeyspaceName() + '.' + cfs.name)
                                                 .collect(Collectors.joining(",")),
                          totalStreamRemaining,
                          totalCompactionWriteRemaining,
@@ -933,14 +1012,14 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                     tasksStreamed = csm.getEstimatedRemainingTasks(perTableIdIncomingFiles.get(tableId),
                                                                    perTableIdIncomingBytes.get(tableId),
                                                                    isForIncremental);
-                    tables.add(String.format("%s.%s", cfs.keyspace.getName(), cfs.name));
+                    tables.add(String.format("%s.%s", cfs.getKeyspaceName(), cfs.name));
                 }
                 pendingCompactionsBeforeStreaming += tasksOther;
                 pendingCompactionsAfterStreaming += tasksStreamed;
             }
         }
         Collections.sort(tables);
-        int pendingThreshold = ActiveRepairService.instance.getRepairPendingCompactionRejectThreshold();
+        int pendingThreshold = ActiveRepairService.instance().getRepairPendingCompactionRejectThreshold();
         if (pendingCompactionsAfterStreaming > pendingThreshold)
         {
             logger.error("[Stream #{}] Rejecting incoming files based on pending compactions calculation " +
@@ -981,7 +1060,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         StreamTransferTask task = transfers.get(message.header.tableId);
         if (task != null)
         {
-            task.scheduleTimeout(message.header.sequenceNumber, 12, TimeUnit.HOURS);
+            task.scheduleTimeout(message.header.sequenceNumber, DatabaseDescriptor.getStreamTransferTaskTimeout().toMilliseconds(), TimeUnit.MILLISECONDS);
         }
     }
 
@@ -1001,7 +1080,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         StreamingMetrics.totalIncomingBytes.inc(headerSize);
         metrics.incomingBytes.inc(headerSize);
         // send back file received message
-        channel.sendControlMessage(new ReceivedMessage(message.header.tableId, message.header.sequenceNumber)).syncUninterruptibly();
+        sendControlMessage(new ReceivedMessage(message.header.tableId, message.header.sequenceNumber)).syncUninterruptibly();
         StreamHook.instance.reportIncomingStream(message.header.tableId, message.stream, this, message.header.sequenceNumber);
         long receivedStartNanos = nanoTime();
         try
@@ -1084,7 +1163,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             // before sending the message (without closing the channel)
             // see CASSANDRA-17116
             state(State.COMPLETE);
-            channel.sendControlMessage(new CompleteMessage()).syncUninterruptibly();
+            sendControlMessage(new CompleteMessage()).syncUninterruptibly();
             closeSession(State.COMPLETE);
         }
 
@@ -1107,7 +1186,9 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     public synchronized void sessionFailed()
     {
         logger.error("[Stream #{}] Remote peer {} failed stream session.", planId(), peer.toString());
-        closeSession(State.FAILED);
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("Remote peer ").append(peer).append(" failed stream session");
+        closeSession(State.FAILED, stringBuilder.toString());
     }
 
     /**
@@ -1116,7 +1197,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     public synchronized void sessionTimeout()
     {
         logger.error("[Stream #{}] timeout with {}.", planId(), peer.toString());
-        closeSession(State.FAILED);
+        closeSession(State.FAILED, "Session timed out");
     }
 
     /**
@@ -1130,7 +1211,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         List<StreamSummary> transferSummaries = Lists.newArrayList();
         for (StreamTask transfer : transfers.values())
             transferSummaries.add(transfer.getSummary());
-        return new SessionInfo(channel.peer(), index, channel.connectedTo(), receivingSummaries, transferSummaries, state);
+        return new SessionInfo(channel.peer(), index, channel.connectedTo(), receivingSummaries, transferSummaries, state, failureReason);
     }
 
     public synchronized void taskCompleted(StreamReceiveTask completedTask)
@@ -1145,23 +1226,12 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         maybeCompleted();
     }
 
-    public void onRemove(InetAddressAndPort endpoint)
-    {
-        logger.error("[Stream #{}] Session failed because remote peer {} has left.", planId(), peer.toString());
-        closeSession(State.FAILED);
-    }
-
-    public void onRestart(InetAddressAndPort endpoint, EndpointState epState)
-    {
-        logger.error("[Stream #{}] Session failed because remote peer {} was restarted.", planId(), peer.toString());
-        closeSession(State.FAILED);
-    }
-
     private void completePreview()
     {
         try
         {
-            state(State.WAIT_COMPLETE);
+            if (state != State.COMPLETE) // mark as waiting to complete while closeSession futures run.
+                state(State.WAIT_COMPLETE);
             closeSession(State.COMPLETE);
         }
         finally
@@ -1210,7 +1280,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                     // pass the session planId/index to the OFM (which is only set at init(), after the transfers have already been created)
                     ofm.header.addSessionInfo(this);
                     // do not sync here as this does disk access
-                    channel.sendControlMessage(ofm);
+                    sendControlMessage(ofm);
                 }
             }
             else
@@ -1309,11 +1379,11 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             logger.debug("[Stream #{}] Stream session with peer {} is already in a final state on abort.", planId(), peer);
             return;
         }
-            
+
         logger.info("[Stream #{}] Aborting stream session with peer {}...", planId(), peer);
 
         if (channel.connected())
-            channel.sendControlMessage(new SessionFailedMessage());
+            sendControlMessage(new SessionFailedMessage());
 
         try
         {
@@ -1339,5 +1409,38 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                ", previewKind=" + previewKind +
                ", state=" + state +
                '}';
+    }
+
+    public static StringBuilder boundStackTrace(Throwable e, int limit, StringBuilder out)
+    {
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        return boundStackTrace(e, limit, limit, visited, out);
+    }
+
+    public static StringBuilder boundStackTrace(Throwable e, int limit, int counter, Set<Throwable> visited, StringBuilder out)
+    {
+        if (e == null)
+            return out;
+
+        if (!visited.add(e))
+            return out.append("[CIRCULAR REFERENCE: ").append(e.getClass().getName()).append(": ").append(e.getMessage()).append("]").append('\n');
+        visited.add(e);
+
+        StackTraceElement[] stackTrace = e.getStackTrace();
+        out.append(e.getClass().getName() + ": " + e.getMessage()).append('\n');
+
+        // When dealing with the leaf, ignore how many stack traces were already written, and allow the max.
+        // This is here as the leaf tends to show where the issue started, so tends to be impactful for debugging
+        if (e.getCause() == null)
+            counter = limit;
+
+        for (int i = 0, size = Math.min(e.getStackTrace().length, limit); i < size && counter > 0; i++)
+        {
+            out.append('\t').append(stackTrace[i]).append('\n');
+            counter--;
+        }
+
+        boundStackTrace(e.getCause(), limit, counter, visited, out);
+        return out;
     }
 }

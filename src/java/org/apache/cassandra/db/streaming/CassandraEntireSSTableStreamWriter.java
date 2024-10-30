@@ -27,9 +27,9 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.streaming.ProgressInfo;
-import org.apache.cassandra.streaming.StreamingDataOutputPlus;
 import org.apache.cassandra.streaming.StreamManager;
 import org.apache.cassandra.streaming.StreamSession;
+import org.apache.cassandra.streaming.StreamingDataOutputPlus;
 
 import static org.apache.cassandra.streaming.StreamManager.StreamRateLimiter;
 import static org.apache.cassandra.utils.FBUtilities.prettyPrintMemory;
@@ -88,12 +88,11 @@ public class CassandraEntireSSTableStreamWriter
                          component,
                          prettyPrintMemory(length));
 
-            @SuppressWarnings("resource") // this is closed after the file is transferred by AsyncChannelOutputPlus
             FileChannel channel = context.channel(sstable.descriptor, component, length);
             long bytesWritten = out.writeFileToChannel(channel, limiter);
             progress += bytesWritten;
 
-            session.progress(sstable.descriptor.filenameFor(component), ProgressInfo.Direction.OUT, bytesWritten, bytesWritten, length);
+            session.progress(sstable.descriptor.fileFor(component).toString(), ProgressInfo.Direction.OUT, bytesWritten, bytesWritten, length);
 
             logger.debug("[Stream #{}] Finished streaming {}.{} gen {} component {} to {}, xfered = {}, length = {}, totalSize = {}",
                          session.planId(),

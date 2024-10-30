@@ -48,6 +48,7 @@ import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.NativeSSTableLoaderClient;
 import org.apache.cassandra.utils.OutputHandler;
 
+import static org.apache.cassandra.config.EncryptionOptions.ClientAuth.REQUIRED;
 import static org.apache.cassandra.utils.Clock.Global.nanoTime;
 
 public class BulkLoader
@@ -60,7 +61,7 @@ public class BulkLoader
 
     public static void load(LoaderOptions options) throws BulkLoadException
     {
-        DatabaseDescriptor.toolInitialization();
+        DatabaseDescriptor.clientInitialization();
         OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
         SSTableLoader loader = new SSTableLoader(
                 options.directory.toAbsolute(),
@@ -264,7 +265,7 @@ public class BulkLoader
         SSLContext sslContext;
         try
         {
-            sslContext = SSLFactory.createSSLContext(clientEncryptionOptions, true);
+            sslContext = SSLFactory.createSSLContext(clientEncryptionOptions, REQUIRED);
         }
         catch (IOException e)
         {
@@ -273,8 +274,9 @@ public class BulkLoader
 
         // Temporarily override newSSLEngine to set accepted protocols until it is added to
         // RemoteEndpointAwareJdkSSLOptions.  See CASSANDRA-13325 and CASSANDRA-16362.
-        RemoteEndpointAwareJdkSSLOptions sslOptions = new RemoteEndpointAwareJdkSSLOptions(sslContext, null)
+        RemoteEndpointAwareJdkSSLOptions sslOptions = new RemoteEndpointAwareJdkSSLOptions(sslContext, clientEncryptionOptions.cipherSuitesArray())
         {
+            @Override
             protected SSLEngine newSSLEngine(SocketChannel channel, InetSocketAddress remoteEndpoint)
             {
                 SSLEngine engine = super.newSSLEngine(channel, remoteEndpoint);

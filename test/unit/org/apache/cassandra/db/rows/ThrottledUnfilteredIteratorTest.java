@@ -31,7 +31,6 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 
 import com.google.common.collect.Iterators;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
@@ -56,7 +55,6 @@ import org.apache.cassandra.db.partitions.ImmutableBTreePartition;
 import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.ColumnMetadata;
@@ -70,15 +68,6 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
 {
     private static final String KSNAME = "ThrottledUnfilteredIteratorTest";
     private static final String CFNAME = "StandardInteger1";
-
-    @BeforeClass
-    public static void defineSchema() throws ConfigurationException
-    {
-        SchemaLoader.prepareServer();
-        SchemaLoader.createKeyspace(KSNAME,
-                                    KeyspaceParams.simple(1),
-                                    standardCFMD(KSNAME, CFNAME, 1, UTF8Type.instance, Int32Type.instance, Int32Type.instance));
-    }
 
     static final TableMetadata metadata;
     static final ColumnMetadata v1Metadata;
@@ -159,7 +148,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
             UnfilteredRowIterator iterator = throttled.next();
             assertFalse(throttled.hasNext());
             assertFalse(iterator.hasNext());
-            assertEquals(Int32Type.instance.getSerializer().deserialize(iterator.staticRow().cells().iterator().next().buffer()), new Integer(160));
+            assertEquals(Int32Type.instance.getSerializer().deserialize(iterator.staticRow().cells().iterator().next().buffer()), Integer.valueOf(160));
         }
 
         // test opt out
@@ -366,7 +355,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
         {
             origin = rows(metadata.regularAndStaticColumns(),
                           1,
-                          new DeletionTime(0, 100),
+                          DeletionTime.build(0, 100),
                           createStaticRow(createCell(staticMetadata, 160)),
                           rows.toArray(new Row[0]));
             throttledIterator = new ThrottledUnfilteredIterator(origin, throttle);
@@ -413,7 +402,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
         for (int throttle = 2; throttle < 1200; throttle += 21)
         {
             origin = partitions(metadata.regularAndStaticColumns(),
-                                new DeletionTime(0, 100),
+                                DeletionTime.build(0, 100),
                                 createStaticRow(createCell(staticMetadata, 160)),
                                 partitions);
             throttledIterator = ThrottledUnfilteredIterator.throttle(origin, throttle);
@@ -434,7 +423,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
                 }
                 UnfilteredRowIterator current = rows(metadata.regularAndStaticColumns(),
                                                      currentPartition,
-                                                     new DeletionTime(0, 100),
+                                                     DeletionTime.build(0, 100),
                                                      createStaticRow(createCell(staticMetadata, 160)),
                                                      partitions.get(currentPartition).toArray(new Row[0]));
                 assertMetadata(current, splitted, currentSplit == 1);
@@ -450,7 +439,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
 
 
         origin = partitions(metadata.regularAndStaticColumns(),
-                            new DeletionTime(0, 100),
+                            DeletionTime.build(0, 100),
                             Rows.EMPTY_STATIC_ROW,
                             partitions);
         try
@@ -593,7 +582,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
         return createCell(metadata, v, 100L, BufferCell.NO_DELETION_TIME);
     }
 
-    private static Cell<?> createCell(ColumnMetadata metadata, int v, long timestamp, int localDeletionTime)
+    private static Cell<?> createCell(ColumnMetadata metadata, int v, long timestamp, long localDeletionTime)
     {
         return new BufferCell(metadata,
                               timestamp,
@@ -606,6 +595,9 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
     @Test
     public void testThrottledIteratorWithRangeDeletions() throws Exception
     {
+        SchemaLoader.createKeyspace(KSNAME,
+                                    KeyspaceParams.simple(1),
+                                    standardCFMD(KSNAME, CFNAME, 1, UTF8Type.instance, Int32Type.instance, Int32Type.instance));
         Keyspace keyspace = Keyspace.open(KSNAME);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(CFNAME);
 
@@ -682,7 +674,7 @@ public class ThrottledUnfilteredIteratorTest extends CQLTester
             // Verify throttled data after merge
             Partition partition = ImmutableBTreePartition.create(UnfilteredRowIterators.merge(unfilteredRowIterators));
 
-            int nowInSec = FBUtilities.nowInSeconds();
+            long nowInSec = FBUtilities.nowInSeconds();
 
             for (int i : live)
                 assertTrue("Row " + i + " should be live", partition.getRow(Clustering.make(ByteBufferUtil.bytes((i)))).hasLiveData(nowInSec, cfs.metadata().enforceStrictLiveness()));

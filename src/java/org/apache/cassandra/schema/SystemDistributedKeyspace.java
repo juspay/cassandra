@@ -30,7 +30,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
@@ -48,7 +50,6 @@ import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.CommonRange;
 import org.apache.cassandra.repair.messages.RepairOption;
@@ -67,7 +68,7 @@ public final class SystemDistributedKeyspace
 
     public static final String NAME = "system_distributed";
 
-    private static final int DEFAULT_RF = CassandraRelevantProperties.SYSTEM_DISTRIBUTED_DEFAULT_RF.getInt();
+    public static final int DEFAULT_RF = CassandraRelevantProperties.SYSTEM_DISTRIBUTED_DEFAULT_RF.getInt();
     private static final Logger logger = LoggerFactory.getLogger(SystemDistributedKeyspace.class);
 
     /**
@@ -82,6 +83,8 @@ public final class SystemDistributedKeyspace
      * gen 4: compression chunk length reduced to 16KiB, memtable_flush_period_in_ms now unset on all tables in 4.0
      * gen 5: add ttl and TWCS to repair_history tables
      * gen 6: add denylist table
+     *
+     * // TODO: TCM - how do we evolve these tables?
      */
     public static final long GENERATION = 6;
 
@@ -93,70 +96,68 @@ public final class SystemDistributedKeyspace
 
     public static final String PARTITION_DENYLIST_TABLE = "partition_denylist";
 
+    public static final Set<String> TABLE_NAMES = ImmutableSet.of(REPAIR_HISTORY, PARENT_REPAIR_HISTORY, VIEW_BUILD_STATUS, PARTITION_DENYLIST_TABLE);
+
+    public static final String REPAIR_HISTORY_CQL = "CREATE TABLE IF NOT EXISTS %s ("
+                                                     + "keyspace_name text,"
+                                                     + "columnfamily_name text,"
+                                                     + "id timeuuid,"
+                                                     + "parent_id timeuuid,"
+                                                     + "range_begin text,"
+                                                     + "range_end text,"
+                                                     + "coordinator inet,"
+                                                     + "coordinator_port int,"
+                                                     + "participants set<inet>,"
+                                                     + "participants_v2 set<text>,"
+                                                     + "exception_message text,"
+                                                     + "exception_stacktrace text,"
+                                                     + "status text,"
+                                                     + "started_at timestamp,"
+                                                     + "finished_at timestamp,"
+                                                     + "PRIMARY KEY ((keyspace_name, columnfamily_name), id))";
+
     private static final TableMetadata RepairHistory =
-        parse(REPAIR_HISTORY,
-                "Repair history",
-                "CREATE TABLE %s ("
-                     + "keyspace_name text,"
-                     + "columnfamily_name text,"
-                     + "id timeuuid,"
-                     + "parent_id timeuuid,"
-                     + "range_begin text,"
-                     + "range_end text,"
-                     + "coordinator inet,"
-                     + "coordinator_port int,"
-                     + "participants set<inet>,"
-                     + "participants_v2 set<text>,"
-                     + "exception_message text,"
-                     + "exception_stacktrace text,"
-                     + "status text,"
-                     + "started_at timestamp,"
-                     + "finished_at timestamp,"
-                     + "PRIMARY KEY ((keyspace_name, columnfamily_name), id))")
+        parse(REPAIR_HISTORY, "Repair history", REPAIR_HISTORY_CQL)
         .defaultTimeToLive((int) TimeUnit.DAYS.toSeconds(30))
         .compaction(CompactionParams.twcs(ImmutableMap.of("compaction_window_unit","DAYS",
                                                           "compaction_window_size","1")))
         .build();
 
+    public static final String PARENT_REPAIR_HISTORY_CQL = "CREATE TABLE IF NOT EXISTS %s ("
+                                                            + "parent_id timeuuid,"
+                                                            + "keyspace_name text,"
+                                                            + "columnfamily_names set<text>,"
+                                                            + "started_at timestamp,"
+                                                            + "finished_at timestamp,"
+                                                            + "exception_message text,"
+                                                            + "exception_stacktrace text,"
+                                                            + "requested_ranges set<text>,"
+                                                            + "successful_ranges set<text>,"
+                                                            + "options map<text, text>,"
+                                                            + "PRIMARY KEY (parent_id))";
     private static final TableMetadata ParentRepairHistory =
-        parse(PARENT_REPAIR_HISTORY,
-                "Repair history",
-                "CREATE TABLE %s ("
-                     + "parent_id timeuuid,"
-                     + "keyspace_name text,"
-                     + "columnfamily_names set<text>,"
-                     + "started_at timestamp,"
-                     + "finished_at timestamp,"
-                     + "exception_message text,"
-                     + "exception_stacktrace text,"
-                     + "requested_ranges set<text>,"
-                     + "successful_ranges set<text>,"
-                     + "options map<text, text>,"
-                     + "PRIMARY KEY (parent_id))")
+        parse(PARENT_REPAIR_HISTORY, "Repair history", PARENT_REPAIR_HISTORY_CQL)
         .defaultTimeToLive((int) TimeUnit.DAYS.toSeconds(30))
         .compaction(CompactionParams.twcs(ImmutableMap.of("compaction_window_unit","DAYS",
                                                           "compaction_window_size","1")))
         .build();
 
+    public static final String VIEW_BUILD_STATUS_CQL = "CREATE TABLE IF NOT EXISTS %s ("
+                                                       + "keyspace_name text,"
+                                                       + "view_name text,"
+                                                       + "host_id uuid,"
+                                                       + "status text,"
+                                                       + "PRIMARY KEY ((keyspace_name, view_name), host_id))";
     private static final TableMetadata ViewBuildStatus =
-        parse(VIEW_BUILD_STATUS,
-            "Materialized View build status",
-            "CREATE TABLE %s ("
-                     + "keyspace_name text,"
-                     + "view_name text,"
-                     + "host_id uuid,"
-                     + "status text,"
-                     + "PRIMARY KEY ((keyspace_name, view_name), host_id))").build();
+        parse(VIEW_BUILD_STATUS, "Materialized View build status", VIEW_BUILD_STATUS_CQL).build();
 
-    public static final TableMetadata PartitionDenylistTable =
-    parse(PARTITION_DENYLIST_TABLE,
-          "Partition keys which have been denied access",
-          "CREATE TABLE %s ("
-          + "ks_name text,"
-          + "table_name text,"
-          + "key blob,"
-          + "PRIMARY KEY ((ks_name, table_name), key))")
-    .build();
+    public static final String PARTITION_DENYLIST_CQL = "CREATE TABLE IF NOT EXISTS %s ("
+                                                        + "ks_name text,"
+                                                        + "table_name text,"
+                                                        + "key blob,"
+                                                        + "PRIMARY KEY ((ks_name, table_name), key))";
+    private static final TableMetadata PartitionDenylistTable =
+        parse(PARTITION_DENYLIST_TABLE, "Partition keys which have been denied access", PARTITION_DENYLIST_CQL).build();
 
     private static TableMetadata.Builder parse(String table, String description, String cql)
     {
@@ -165,16 +166,19 @@ public final class SystemDistributedKeyspace
                                    .comment(description);
     }
 
+    @VisibleForTesting
     public static KeyspaceMetadata metadata()
     {
-        return KeyspaceMetadata.create(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, KeyspaceParams.simple(Math.max(DEFAULT_RF, DatabaseDescriptor.getDefaultKeyspaceRF())), Tables.of(RepairHistory, ParentRepairHistory, ViewBuildStatus, PartitionDenylistTable));
+        return KeyspaceMetadata.create(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME,
+                                       KeyspaceParams.simple(Math.max(DEFAULT_RF, DatabaseDescriptor.getDefaultKeyspaceRF())),
+                                       Tables.of(RepairHistory, ParentRepairHistory, ViewBuildStatus, PartitionDenylistTable));
     }
 
     public static void startParentRepair(TimeUUID parent_id, String keyspaceName, String[] cfnames, RepairOption options)
     {
         Collection<Range<Token>> ranges = options.getRanges();
         String query = "INSERT INTO %s.%s (parent_id, keyspace_name, columnfamily_names, requested_ranges, started_at,          options)"+
-                                 " VALUES (%s,        '%s',          { '%s' },           { '%s' },          toTimestamp(now()), { %s })";
+                                 " VALUES (%s,        '%s',          { '%s' },           { '%s' },          to_timestamp(now()), { %s })";
         String fmtQry = format(query,
                                       SchemaConstants.DISTRIBUTED_KEYSPACE_NAME,
                                       PARENT_REPAIR_HISTORY,
@@ -206,7 +210,7 @@ public final class SystemDistributedKeyspace
 
     public static void failParentRepair(TimeUUID parent_id, Throwable t)
     {
-        String query = "UPDATE %s.%s SET finished_at = toTimestamp(now()), exception_message=?, exception_stacktrace=? WHERE parent_id=%s";
+        String query = "UPDATE %s.%s SET finished_at = to_timestamp(now()), exception_message=?, exception_stacktrace=? WHERE parent_id=%s";
 
         StringWriter sw = new StringWriter();
         PrintWriter pw = new PrintWriter(sw);
@@ -218,17 +222,13 @@ public final class SystemDistributedKeyspace
 
     public static void successfulParentRepair(TimeUUID parent_id, Collection<Range<Token>> successfulRanges)
     {
-        String query = "UPDATE %s.%s SET finished_at = toTimestamp(now()), successful_ranges = {'%s'} WHERE parent_id=%s";
+        String query = "UPDATE %s.%s SET finished_at = to_timestamp(now()), successful_ranges = {'%s'} WHERE parent_id=%s";
         String fmtQuery = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, PARENT_REPAIR_HISTORY, Joiner.on("','").join(successfulRanges), parent_id.toString());
         processSilent(fmtQuery);
     }
 
     public static void startRepairs(TimeUUID id, TimeUUID parent_id, String keyspaceName, String[] cfnames, CommonRange commonRange)
     {
-        // Don't record repair history if an upgrade is in progress as version 3 nodes generates errors
-        // due to schema differences
-        boolean includeNewColumns = !Gossiper.instance.hasMajorVersion3Nodes();
-
         InetAddressAndPort coordinator = FBUtilities.getBroadcastAddressAndPort();
         Set<String> participants = Sets.newHashSet();
         Set<String> participants_v2 = Sets.newHashSet();
@@ -241,44 +241,28 @@ public final class SystemDistributedKeyspace
 
         String query =
                 "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, coordinator_port, participants, participants_v2, status, started_at) " +
-                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',        %d,               { '%s' },     { '%s' },        '%s',   toTimestamp(now()))";
+                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',        %d,               { '%s' },     { '%s' },        '%s',   to_timestamp(now()))";
         String queryWithoutNewColumns =
                 "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, participants, status, started_at) " +
-                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',               { '%s' },        '%s',   toTimestamp(now()))";
+                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',               { '%s' },        '%s',   to_timestamp(now()))";
 
         for (String cfname : cfnames)
         {
             for (Range<Token> range : commonRange.ranges)
             {
                 String fmtQry;
-                if (includeNewColumns)
-                {
-                    fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    coordinator.getPort(),
-                                    Joiner.on("', '").join(participants),
-                                    Joiner.on("', '").join(participants_v2),
-                                    RepairState.STARTED.toString());
-                }
-                else
-                {
-                    fmtQry = format(queryWithoutNewColumns, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    Joiner.on("', '").join(participants),
-                                    RepairState.STARTED.toString());
-                }
+                fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
+                                keyspaceName,
+                                cfname,
+                                id.toString(),
+                                parent_id.toString(),
+                                range.left.toString(),
+                                range.right.toString(),
+                                coordinator.getHostAddress(false),
+                                coordinator.getPort(),
+                                Joiner.on("', '").join(participants),
+                                Joiner.on("', '").join(participants_v2),
+                                RepairState.STARTED.toString());
                 processSilent(fmtQry);
             }
         }
@@ -292,7 +276,7 @@ public final class SystemDistributedKeyspace
 
     public static void successfulRepairJob(TimeUUID id, String keyspaceName, String cfname)
     {
-        String query = "UPDATE %s.%s SET status = '%s', finished_at = toTimestamp(now()) WHERE keyspace_name = '%s' AND columnfamily_name = '%s' AND id = %s";
+        String query = "UPDATE %s.%s SET status = '%s', finished_at = to_timestamp(now()) WHERE keyspace_name = '%s' AND columnfamily_name = '%s' AND id = %s";
         String fmtQuery = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
                                         RepairState.SUCCESS.toString(),
                                         keyspaceName,
@@ -303,7 +287,7 @@ public final class SystemDistributedKeyspace
 
     public static void failedRepairJob(TimeUUID id, String keyspaceName, String cfname, Throwable t)
     {
-        String query = "UPDATE %s.%s SET status = '%s', finished_at = toTimestamp(now()), exception_message=?, exception_stacktrace=? WHERE keyspace_name = '%s' AND columnfamily_name = '%s' AND id = %s";
+        String query = "UPDATE %s.%s SET status = '%s', finished_at = to_timestamp(now()), exception_message=?, exception_stacktrace=? WHERE keyspace_name = '%s' AND columnfamily_name = '%s' AND id = %s";
         StringWriter sw = new StringWriter();
         PrintWriter pw = new PrintWriter(sw);
         t.printStackTrace(pw);

@@ -21,11 +21,14 @@ package org.apache.cassandra.cql3.functions.masking;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.cassandra.cql3.functions.Arguments;
+import org.apache.cassandra.cql3.functions.FunctionArguments;
 import org.apache.cassandra.cql3.functions.FunctionFactory;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.cql3.functions.FunctionParameter;
 import org.apache.cassandra.cql3.functions.NativeFunction;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
@@ -41,18 +44,24 @@ public class DefaultMaskingFunction extends MaskingFunction
 {
     public static final String NAME = "default";
 
-    private final ByteBuffer defaultValue;
+    AbstractType<?> inputType;
 
-    private <T> DefaultMaskingFunction(FunctionName name, AbstractType<T> inputType)
+    private DefaultMaskingFunction(FunctionName name, AbstractType<?> inputType)
     {
         super(name, inputType, inputType);
-        this.defaultValue = inputType.getMaskedValue();
+        this.inputType = inputType;
     }
 
     @Override
-    public final ByteBuffer execute(ProtocolVersion protocolVersion, List<ByteBuffer> parameters)
+    public Arguments newArguments(ProtocolVersion version)
     {
-        return defaultValue;
+        return FunctionArguments.newNoopInstance(version, 1);
+    }
+
+    @Override
+    public ByteBuffer execute(Arguments arguments) throws InvalidRequestException
+    {
+        return inputType.getMaskedValue();
     }
 
     /** @return a {@link FunctionFactory} to build new {@link DefaultMaskingFunction}s. */

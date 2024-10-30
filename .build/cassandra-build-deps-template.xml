@@ -27,6 +27,10 @@
   <version>@version@</version>
   <dependencies>
     <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+    </dependency>
+    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
     </dependency>
@@ -67,6 +71,10 @@
       <artifactId>checkstyle</artifactId>
     </dependency>
     <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava-testlib</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.quicktheories</groupId>
       <artifactId>quicktheories</artifactId>
     </dependency>
@@ -99,10 +107,6 @@
       <artifactId>ant-junit</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.apache.cassandra</groupId>
-      <artifactId>harry-core</artifactId>
-    </dependency>
-    <dependency>
       <groupId>org.junit</groupId>
       <artifactId>junit-bom</artifactId>
       <type>pom</type>
@@ -126,6 +130,30 @@
     <dependency>
       <groupId>com.fasterxml.jackson.dataformat</groupId>
       <artifactId>jackson-dataformat-yaml</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.github.tomakehurst</groupId>
+      <artifactId>wiremock-jre8</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>de.jflex</groupId>
+      <artifactId>jflex</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.carrotsearch.randomizedtesting</groupId>
+      <artifactId>randomizedtesting-runner</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcutil-jdk18on</artifactId>
     </dependency>
   </dependencies>
 </project>

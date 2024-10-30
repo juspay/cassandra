@@ -27,14 +27,14 @@ public abstract class StringType extends AbstractType<String>
         super(comparisonType);
     }
 
-    public ByteBuffer concat(StringType leftType,
-                             ByteBuffer left,
-                             StringType rightType,
-                             ByteBuffer right)
+    @Override
+    public boolean allowsEmpty()
     {
-        String leftS = leftType.compose(left);
-        String rightS = rightType.compose(right);
+        return true;
+    }
 
-        return decompose(leftS + rightS);
+    public ByteBuffer concat(String left, String right)
+    {
+        return decompose(left + right);
     }
 }

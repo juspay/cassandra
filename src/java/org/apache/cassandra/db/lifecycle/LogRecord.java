@@ -22,7 +22,16 @@ package org.apache.cassandra.db.lifecycle;
 
 
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.BiPredicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -36,6 +45,8 @@ import org.apache.cassandra.io.util.File;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.PathUtils;
 import org.apache.cassandra.utils.FBUtilities;
+
+import static org.apache.cassandra.utils.LocalizeString.toUpperCaseLocalized;
 
 /**
  * A decoded line in a transaction log file replica.
@@ -54,7 +65,7 @@ final class LogRecord
 
         public static Type fromPrefix(String prefix)
         {
-            return valueOf(prefix.toUpperCase());
+            return valueOf(toUpperCaseLocalized(prefix));
         }
 
         public boolean hasFile()
@@ -152,7 +163,7 @@ final class LogRecord
 
     public static LogRecord make(Type type, SSTable table)
     {
-        String absoluteTablePath = absolutePath(table.descriptor.baseFilename());
+        String absoluteTablePath = absolutePath(table.descriptor.baseFile());
         return make(type, getExistingFiles(absoluteTablePath), table.getAllFilePaths().size(), absoluteTablePath);
     }
 
@@ -161,7 +172,7 @@ final class LogRecord
         // contains a mapping from sstable absolute path (everything up until the 'Data'/'Index'/etc part of the filename) to the sstable
         Map<String, SSTable> absolutePaths = new HashMap<>();
         for (SSTableReader table : tables)
-            absolutePaths.put(absolutePath(table.descriptor.baseFilename()), table);
+            absolutePaths.put(absolutePath(table.descriptor.baseFile()), table);
 
         // maps sstable base file name to the actual files on disk
         Map<String, List<File>> existingFiles = getExistingFiles(absolutePaths.keySet());
@@ -176,9 +187,9 @@ final class LogRecord
         return records;
     }
 
-    private static String absolutePath(String baseFilename)
+    private static String absolutePath(File baseFile)
     {
-        return FileUtils.getCanonicalPath(baseFilename + Component.separator);
+        return baseFile.withSuffix(String.valueOf(Component.separator)).canonicalPath();
     }
 
     public LogRecord withExistingFiles(List<File> existingFiles)

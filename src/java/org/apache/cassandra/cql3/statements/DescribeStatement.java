@@ -46,6 +46,7 @@ import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.service.pager.PagingState;
+import org.apache.cassandra.transport.Dispatcher;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
@@ -124,7 +125,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
     }
 
     @Override
-    public final ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime) throws RequestValidationException, RequestExecutionException
+    public final ResultMessage execute(QueryState state, QueryOptions options, Dispatcher.RequestTime requestTime) throws RequestValidationException, RequestExecutionException
     {
         return executeLocally(state, options);
     }
@@ -134,11 +135,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
     {
         Keyspaces keyspaces = Schema.instance.distributedAndLocalKeyspaces();
         UUID schemaVersion = Schema.instance.getVersion();
-
-        keyspaces = Keyspaces.builder()
-                             .add(keyspaces)
-                             .add(VirtualKeyspaceRegistry.instance.virtualKeyspacesMetadata())
-                             .build();
+        keyspaces = keyspaces.with(VirtualKeyspaceRegistry.instance.virtualKeyspacesMetadata());
 
         PagingState pagingState = options.getPagingState();
 
@@ -173,9 +170,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
         ResultSet result = new ResultSet(resultMetadata, rows);
 
         if (pageSize > 0 && rows.size() == pageSize)
-        {
             result.metadata.setHasMorePages(getPagingState(offset + pageSize, schemaVersion));
-        }
 
         return new ResultMessage.Rows(result);
     }
@@ -376,7 +371,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
                 return ImmutableList.of(bytes(element.elementKeyspaceQuotedIfNeeded()),
                                         bytes(element.elementType().toString()),
                                         bytes(element.elementNameQuotedIfNeeded()),
-                                        bytes(element.toCqlString(withInternals, false)));
+                                        bytes(element.toCqlString(true, withInternals, false)));
             }
         };
     }
@@ -426,7 +421,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
             return ImmutableList.of(bytes(element.elementKeyspaceQuotedIfNeeded()),
                                     bytes(element.elementType().toString()),
                                     bytes(element.elementNameQuotedIfNeeded()),
-                                    bytes(element.toCqlString(withInternals, false)));
+                                    bytes(element.toCqlString(true, withInternals, false)));
         }
     }
 
@@ -472,7 +467,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
     {
         return new Element(keyspace, name, (ks, t) -> {
 
-            TableMetadata table = checkNotNull(ks.getTableOrViewNullable(t),
+            TableMetadata table = checkNotNull(ks.getTableNullable(t),
                                                "Table '%s' not found in keyspace '%s'", t, ks.name);
 
             return Stream.concat(Stream.of(table), table.indexes.stream()
@@ -576,7 +571,7 @@ public abstract class DescribeStatement<T> extends CQLStatement.Raw implements C
                     }
 
                     @Override
-                    public String toCqlString(boolean withInternals, boolean ifNotExists)
+                    public String toCqlString(boolean withWarnings, boolean withInternals, boolean ifNotExists)
                     {
                         return index.toCqlString(table, ifNotExists);
                     }

@@ -35,6 +35,7 @@ import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.Duration;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
+import org.apache.cassandra.db.marshal.FloatType;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.ListType;
 import org.apache.cassandra.db.marshal.MapType;
@@ -42,6 +43,7 @@ import org.apache.cassandra.db.marshal.SetType;
 import org.apache.cassandra.db.marshal.TupleType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.marshal.UserType;
+import org.apache.cassandra.db.marshal.VectorType;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.serializers.SimpleDateSerializer;
@@ -160,6 +162,20 @@ public abstract class MaskingFunctionTester extends CQLTester
     }
 
     /**
+     * Tests the native masking function for vectors.
+     */
+    @Test
+    public void testMaskingOnVector() throws Throwable
+    {
+        testMaskingOnAllColumns(VectorType.getInstance(Int32Type.instance, 2).asCQL3Type(),
+                                vector(1, 10), vector(2, 20));
+        testMaskingOnAllColumns(VectorType.getInstance(FloatType.instance, 2).asCQL3Type(),
+                                vector(1.1f, 10.1f), vector(2.2f, 20.2f));
+        testMaskingOnAllColumns(VectorType.getInstance(UTF8Type.instance, 2).asCQL3Type(),
+                                vector("a1", "a2"), vector("b1", "b2"));
+    }
+
+    /**
      * Tests the native masking function for tuples.
      */
     @Test
@@ -192,7 +208,7 @@ public abstract class MaskingFunctionTester extends CQLTester
      * Tests the native masking function for the specified column type and values on all possible types of column.
      * That is, when the column is part of the primary key, or a regular column, or a static column.
      *
-     * @param type  the type of the tested column
+     * @param type the type of the tested column
      * @param values the values of the tested column
      */
     private void testMaskingOnAllColumns(CQL3Type type, Object... values) throws Throwable
@@ -222,7 +238,7 @@ public abstract class MaskingFunctionTester extends CQLTester
      * Tests the native masking function for the specified column type and values when the column isn't part of the
      * primary key. That is, when the column is either a regular column or a static column.
      *
-     * @param type  the type of the tested column
+     * @param type the type of the tested column
      * @param values the values of the tested column
      */
     private void testMaskingOnNotKeyColumns(CQL3Type type, Object... values) throws Throwable
@@ -265,8 +281,8 @@ public abstract class MaskingFunctionTester extends CQLTester
      * Tests the native masking function for the specified column type and value.
      * This assumes that the table is already created.
      *
-     * @param name  the name of the tested column
-     * @param type  the type of the tested column
+     * @param name the name of the tested column
+     * @param type the type of the tested column
      * @param value the value of the tested column
      */
     protected abstract void testMaskingOnColumn(String name, CQL3Type type, Object value) throws Throwable;

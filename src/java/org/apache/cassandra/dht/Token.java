@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.dht;
 
-import java.io.DataInput;
 import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
@@ -25,15 +24,20 @@ import java.nio.ByteBuffer;
 import org.apache.cassandra.db.PartitionPosition;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.bytecomparable.ByteComparable;
 import org.apache.cassandra.utils.bytecomparable.ByteSource;
+import org.apache.cassandra.tcm.serialization.PartitionerAwareMetadataSerializer;
+import org.apache.cassandra.tcm.serialization.Version;
+import org.apache.cassandra.net.MessagingService;
 
 public abstract class Token implements RingPosition<Token>, Serializable
 {
     private static final long serialVersionUID = 1L;
 
     public static final TokenSerializer serializer = new TokenSerializer();
+    public static final MetadataSerializer metadataSerializer = new MetadataSerializer();
 
     public static abstract class TokenFactory
     {
@@ -90,6 +94,40 @@ public abstract class Token implements RingPosition<Token>, Serializable
         }
     }
 
+    public static class MetadataSerializer implements PartitionerAwareMetadataSerializer<Token>
+    {
+        private static final int SERDE_VERSION = MessagingService.VERSION_40;
+
+        // Convenience method as Token has a reference to its Partitioner
+        public void serialize(Token t, DataOutputPlus out, Version version) throws IOException
+        {
+            serialize(t, out, t.getPartitioner(), version);
+        }
+
+        public void serialize(Token t, DataOutputPlus out, IPartitioner partitioner, Version version) throws IOException
+        {
+            serializer.serialize(t, out, SERDE_VERSION);
+        }
+
+        public Token deserialize(DataInputPlus in, IPartitioner partitioner, Version version) throws IOException
+        {
+            // This is only ever used to deserialize Tokens from this cluster and as the partitioner can
+            // never be changed, it's safe to assume that the right implementation is provided by ClusterMetadata
+            return serializer.deserialize(in, partitioner, SERDE_VERSION);
+        }
+
+        // Convenience method as Token has a reference to its Partitioner
+        public long serializedSize(Token t, Version version)
+        {
+            return serializedSize(t, t.getPartitioner(), version);
+        }
+
+        public long serializedSize(Token t, IPartitioner partitioner, Version version)
+        {
+            return serializer.serializedSize(t, SERDE_VERSION);
+        }
+    }
+
     public static class TokenSerializer implements IPartitionerDependentSerializer<Token>
     {
         public void serialize(Token token, DataOutputPlus out, int version) throws IOException
@@ -99,7 +137,7 @@ public abstract class Token implements RingPosition<Token>, Serializable
             p.getTokenFactory().serialize(token, out);
         }
 
-        public Token deserialize(DataInput in, IPartitioner p, int version) throws IOException
+        public Token deserialize(DataInputPlus in, IPartitioner p, int version) throws IOException
         {
             int size = deserializeSize(in);
             byte[] bytes = new byte[size];
@@ -107,7 +145,7 @@ public abstract class Token implements RingPosition<Token>, Serializable
             return p.getTokenFactory().fromByteArray(ByteBuffer.wrap(bytes));
         }
 
-        public int deserializeSize(DataInput in) throws IOException
+        public int deserializeSize(DataInputPlus in) throws IOException
         {
             return in.readInt();
         }
@@ -123,6 +161,21 @@ public abstract class Token implements RingPosition<Token>, Serializable
     abstract public IPartitioner getPartitioner();
     abstract public long getHeapSize();
     abstract public Object getTokenValue();
+
+    /**
+     * This method exists so that callers can access the primitive {@code long} value for this {@link Token}, if
+     * one exits. It is especially useful when the auto-boxing induced by a call to {@link #getTokenValue()} would
+     * be unacceptable for reasons of performance.
+     *
+     * @return the primitive {@code long} value of this token, if one exists
+     *
+     * @throws UnsupportedOperationException if this {@link Token} is not backed by a primitive {@code long} value
+     */
+    public long getLongValue()
+    {
+        throw new UnsupportedOperationException();
+    }
+
 
     /**
      * Produce a weakly prefix-free byte-comparable representation of the token, i.e. such a sequence of bytes that any
@@ -144,11 +197,18 @@ public abstract class Token implements RingPosition<Token>, Serializable
      */
     abstract public double size(Token next);
     /**
-     * Returns a token that is slightly greater than this. Used to avoid clashes
-     * between nodes in separate datacentres trying to use the same token via
-     * the token allocation algorithm.
+     * Returns the next possible token in the token space, one that compares
+     * greater than this and such that there is no other token that sits
+     * between this token and it in the token order.
+     *
+     * This is not possible for all token types, esp. for comparison-based
+     * tokens such as the LocalPartioner used for classic secondary indexes.
+     *
+     * Used to avoid clashes between nodes in separate datacentres trying to
+     * use the same token via the token allocation algorithm, as well as in
+     * constructing token ranges for sstables.
      */
-    abstract public Token increaseSlightly();
+    abstract public Token nextValidToken();
 
     public Token getToken()
     {

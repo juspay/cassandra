@@ -35,6 +35,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.apache.cassandra.concurrent.FutureTask;
+import org.apache.cassandra.config.CassandraRelevantProperties;
 import org.apache.cassandra.utils.TimeUUID;
 import org.apache.cassandra.utils.concurrent.Future;
 import org.apache.cassandra.utils.concurrent.FutureCombiner;
@@ -67,8 +68,8 @@ import static org.apache.cassandra.utils.Clock.Global.currentTimeMillis;
 public class PendingAntiCompaction
 {
     private static final Logger logger = LoggerFactory.getLogger(PendingAntiCompaction.class);
-    private static final int ACQUIRE_SLEEP_MS = Integer.getInteger("cassandra.acquire_sleep_ms", 1000);
-    private static final int ACQUIRE_RETRY_SECONDS = Integer.getInteger("cassandra.acquire_retry_seconds", 60);
+    private static final int ACQUIRE_SLEEP_MS = CassandraRelevantProperties.ACQUIRE_SLEEP_MS.getInt();
+    private static final int ACQUIRE_RETRY_SECONDS = CassandraRelevantProperties.ACQUIRE_RETRY_SECONDS.getInt();
 
     public static class AcquireResult
     {
@@ -136,7 +137,7 @@ public class PendingAntiCompaction
             // non-finalized sessions for a later error message
             if (metadata.pendingRepair != NO_PENDING_REPAIR)
             {
-                if (!ActiveRepairService.instance.consistent.local.isSessionFinalized(metadata.pendingRepair))
+                if (!ActiveRepairService.instance().consistent.local.isSessionFinalized(metadata.pendingRepair))
                 {
                     String message = String.format("Prepare phase for incremental repair session %s has failed because it encountered " +
                                                    "intersecting sstables belonging to another incremental repair session (%s). This is " +
@@ -188,7 +189,6 @@ public class PendingAntiCompaction
             this.acquireSleepMillis = acquireSleepMillis;
         }
 
-        @SuppressWarnings("resource")
         private AcquireResult acquireTuple()
         {
             // this method runs with compactions stopped & disabled

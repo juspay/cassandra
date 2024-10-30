@@ -24,6 +24,7 @@ import java.util.*;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.dht.AbstractBounds;
+import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.RequestFailureReason;
@@ -31,13 +32,16 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.*;
+import org.apache.cassandra.net.IVerbHandler;
+import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.RequestCallbackWithFailure;
+import org.apache.cassandra.repair.SharedContext;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.paxos.Ballot;
 import org.apache.cassandra.utils.concurrent.AsyncFuture;
 
-import static org.apache.cassandra.config.DatabaseDescriptor.getPartitioner;
 import static org.apache.cassandra.net.NoPayload.noPayload;
 import static org.apache.cassandra.net.Verb.PAXOS2_CLEANUP_COMPLETE_REQ;
 
@@ -48,23 +52,29 @@ public class PaxosCleanupComplete extends AsyncFuture<Void> implements RequestCa
     final Collection<Range<Token>> ranges;
     final Ballot lowBound;
     final boolean skippedReplicas;
+    private final SharedContext ctx;
+    private final boolean isUrgent;
 
-    PaxosCleanupComplete(Collection<InetAddressAndPort> endpoints, TableId tableId, Collection<Range<Token>> ranges, Ballot lowBound, boolean skippedReplicas)
+    PaxosCleanupComplete(SharedContext ctx, Collection<InetAddressAndPort> endpoints, TableId tableId, Collection<Range<Token>> ranges, Ballot lowBound, boolean skippedReplicas, boolean isUrgent)
     {
+        this.ctx = ctx;
         this.waitingResponse = new HashSet<>(endpoints);
         this.tableId = tableId;
         this.ranges = ranges;
         this.lowBound = lowBound;
         this.skippedReplicas = skippedReplicas;
+        this.isUrgent = isUrgent;
     }
 
     public synchronized void run()
     {
         Request request = !skippedReplicas ? new Request(tableId, lowBound, ranges)
                                            : new Request(tableId, Ballot.none(), Collections.emptyList());
-        Message<Request> message = Message.out(PAXOS2_CLEANUP_COMPLETE_REQ, request);
+
+        Message<Request> message = Message.out(PAXOS2_CLEANUP_COMPLETE_REQ, request, isUrgent);
+
         for (InetAddressAndPort endpoint : waitingResponse)
-            MessagingService.instance().sendWithCallback(message, endpoint, this);
+            ctx.messaging().sendWithCallback(message, endpoint, this);
     }
 
     @Override
@@ -86,7 +96,7 @@ public class PaxosCleanupComplete extends AsyncFuture<Void> implements RequestCa
             trySuccess(null);
     }
 
-    static class Request
+    public static class Request
     {
         final TableId tableId;
         final Ballot lowBound;
@@ -115,11 +125,13 @@ public class PaxosCleanupComplete extends AsyncFuture<Void> implements RequestCa
         {
             TableId tableId = TableId.deserialize(in);
             Ballot lowBound = Ballot.deserialize(in);
+            TableMetadata table = Schema.instance.getTableMetadata(tableId);
+            IPartitioner partitioner = table != null ? table.partitioner : IPartitioner.global();
             int numRanges = in.readInt();
             List<Range<Token>> ranges = new ArrayList<>();
             for (int i = 0; i < numRanges; i++)
             {
-                Range<Token> range = (Range<Token>) AbstractBounds.tokenSerializer.deserialize(in, getPartitioner(), version);
+                Range<Token> range = (Range<Token>) AbstractBounds.tokenSerializer.deserialize(in, partitioner, version);
                 ranges.add(range);
             }
             return new Request(tableId, lowBound, ranges);
@@ -136,9 +148,14 @@ public class PaxosCleanupComplete extends AsyncFuture<Void> implements RequestCa
         }
     };
 
-    public static final IVerbHandler<Request> verbHandler = (in) -> {
-        ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreInstance(in.payload.tableId);
-        cfs.onPaxosRepairComplete(in.payload.ranges, in.payload.lowBound);
-        MessagingService.instance().respond(noPayload, in);
-    };
+    public static IVerbHandler<Request> createVerbHandler(SharedContext ctx)
+    {
+        return (in) -> {
+            ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreInstance(in.payload.tableId);
+            cfs.onPaxosRepairComplete(in.payload.ranges, in.payload.lowBound);
+            ctx.messaging().respond(noPayload, in);
+        };
+    }
+
+    public static final IVerbHandler<Request> verbHandler = createVerbHandler(SharedContext.Global.instance);
 }

@@ -477,25 +477,25 @@ public class AggregationTest extends CQLTester
                                          "LANGUAGE JAVA " +
                                          "AS 'return Double.valueOf(Math.copySign(magnitude, sign));';");
 
-        assertColumnNames(execute("SELECT max(a), max(toUnixTimestamp(b)) FROM %s"), "system.max(a)", "system.max(system.tounixtimestamp(b))");
-        assertRows(execute("SELECT max(a), max(toUnixTimestamp(b)) FROM %s"), row(null, null));
-        assertColumnNames(execute("SELECT max(a), toUnixTimestamp(max(b)) FROM %s"), "system.max(a)", "system.tounixtimestamp(system.max(b))");
-        assertRows(execute("SELECT max(a), toUnixTimestamp(max(b)) FROM %s"), row(null, null));
+        assertColumnNames(execute("SELECT max(a), max(to_unix_timestamp(b)) FROM %s"), "system.max(a)", "system.max(system.to_unix_timestamp(b))");
+        assertRows(execute("SELECT max(a), max(to_unix_timestamp(b)) FROM %s"), row(null, null));
+        assertColumnNames(execute("SELECT max(a), to_unix_timestamp(max(b)) FROM %s"), "system.max(a)", "system.to_unix_timestamp(system.max(b))");
+        assertRows(execute("SELECT max(a), to_unix_timestamp(max(b)) FROM %s"), row(null, null));
 
         assertColumnNames(execute("SELECT max(" + copySign + "(c, d)) FROM %s"), "system.max(" + copySign + "(c, d))");
         assertRows(execute("SELECT max(" + copySign + "(c, d)) FROM %s"), row((Object) null));
 
-        execute("INSERT INTO %s (a, b, c, d) VALUES (1, maxTimeuuid('2011-02-03 04:05:00+0000'), -1.2, 2.1)");
-        execute("INSERT INTO %s (a, b, c, d) VALUES (2, maxTimeuuid('2011-02-03 04:06:00+0000'), 1.3, -3.4)");
-        execute("INSERT INTO %s (a, b, c, d) VALUES (3, maxTimeuuid('2011-02-03 04:10:00+0000'), 1.4, 1.2)");
+        execute("INSERT INTO %s (a, b, c, d) VALUES (1, max_timeuuid('2011-02-03 04:05:00+0000'), -1.2, 2.1)");
+        execute("INSERT INTO %s (a, b, c, d) VALUES (2, max_timeuuid('2011-02-03 04:06:00+0000'), 1.3, -3.4)");
+        execute("INSERT INTO %s (a, b, c, d) VALUES (3, max_timeuuid('2011-02-03 04:10:00+0000'), 1.4, 1.2)");
 
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss");
         format.setTimeZone(TimeZone.getTimeZone("GMT"));
         Date date = format.parse("2011-02-03 04:10:00");
         date = DateUtils.truncate(date, Calendar.MILLISECOND);
 
-        assertRows(execute("SELECT max(a), max(toUnixTimestamp(b)) FROM %s"), row(3, date.getTime()));
-        assertRows(execute("SELECT max(a), toUnixTimestamp(max(b)) FROM %s"), row(3, date.getTime()));
+        assertRows(execute("SELECT max(a), max(to_unix_timestamp(b)) FROM %s"), row(3, date.getTime()));
+        assertRows(execute("SELECT max(a), to_unix_timestamp(max(b)) FROM %s"), row(3, date.getTime()));
 
         assertRows(execute("SELECT " + copySign + "(max(c), min(c)) FROM %s"), row(-1.4));
         assertRows(execute("SELECT " + copySign + "(c, d) FROM %s"), row(1.2), row(-1.3), row(1.4));
@@ -512,16 +512,16 @@ public class AggregationTest extends CQLTester
                                   "CREATE OR REPLACE FUNCTION %s(state double, val double) " +
                                   "RETURNS NULL ON NULL INPUT " +
                                   "RETURNS double " +
-                                  "LANGUAGE javascript " +
-                                  "AS '\"string\";';");
+                                  "LANGUAGE java " +
+                                  "AS ' return state;';");
 
         createFunctionOverload(f,
                                "double, double",
                                "CREATE OR REPLACE FUNCTION %s(state int, val int) " +
                                "RETURNS NULL ON NULL INPUT " +
                                "RETURNS int " +
-                               "LANGUAGE javascript " +
-                               "AS '\"string\";';");
+                               "LANGUAGE java " +
+                               "AS 'return state;';");
 
         String a = createAggregateName(KEYSPACE);
         String aggregateName = shortFunctionName(a);
@@ -564,8 +564,8 @@ public class AggregationTest extends CQLTester
                                    "CREATE OR REPLACE FUNCTION %s(state double, val list<tuple<int, int>>) " +
                                    "RETURNS NULL ON NULL INPUT " +
                                    "RETURNS double " +
-                                   "LANGUAGE javascript " +
-                                   "AS '\"string\";';");
+                                   "LANGUAGE java " +
+                                   "AS ' return state;';");
 
         String a1 = createAggregateName(KEYSPACE);
         registerAggregate(a1, "list<tuple<int, int>>");
@@ -587,16 +587,16 @@ public class AggregationTest extends CQLTester
                                   "CREATE OR REPLACE FUNCTION %s(state double, val double) " +
                                   "RETURNS NULL ON NULL INPUT " +
                                   "RETURNS double " +
-                                  "LANGUAGE javascript " +
-                                  "AS '\"string\";';");
+                                  "LANGUAGE java " +
+                                  "AS 'return state;';");
 
         createFunctionOverload(f,
                                "double, double",
                                "CREATE OR REPLACE FUNCTION %s(state int, val int) " +
                                "RETURNS NULL ON NULL INPUT " +
                                "RETURNS int " +
-                               "LANGUAGE javascript " +
-                               "AS '\"string\";';");
+                               "LANGUAGE java " +
+                               "AS ' return state;';");
 
         // DROP AGGREGATE must not succeed against a scalar
         assertInvalidMessage("matches multiple function definitions", "DROP AGGREGATE " + f);
@@ -639,8 +639,8 @@ public class AggregationTest extends CQLTester
                                   "CREATE OR REPLACE FUNCTION %s(state double, val double) " +
                                   "RETURNS NULL ON NULL INPUT " +
                                   "RETURNS double " +
-                                  "LANGUAGE javascript " +
-                                  "AS '\"string\";';");
+                                  "LANGUAGE java " +
+                                  "AS ' return state;';");
 
         String a = createAggregate(KEYSPACE,
                                    "double",
@@ -1139,81 +1139,6 @@ public class AggregationTest extends CQLTester
     }
 
     @Test
-    public void testJavascriptAggregate() throws Throwable
-    {
-        createTable("CREATE TABLE %s (a int primary key, b int)");
-        execute("INSERT INTO %s (a, b) VALUES (1, 1)");
-        execute("INSERT INTO %s (a, b) VALUES (2, 2)");
-        execute("INSERT INTO %s (a, b) VALUES (3, 3)");
-
-        String fState = createFunction(KEYSPACE,
-                                       "int, int",
-                                       "CREATE FUNCTION %s(a int, b int) " +
-                                       "RETURNS NULL ON NULL INPUT " +
-                                       "RETURNS int " +
-                                       "LANGUAGE javascript " +
-                                       "AS 'a + b;'");
-
-        String fFinal = createFunction(KEYSPACE,
-                                       "int",
-                                       "CREATE FUNCTION %s(a int) " +
-                                       "RETURNS NULL ON NULL INPUT " +
-                                       "RETURNS text " +
-                                       "LANGUAGE javascript " +
-                                       "AS '\"\"+a'");
-
-        String a = createFunction(KEYSPACE,
-                                  "int",
-                                  "CREATE AGGREGATE %s(int) " +
-                                  "SFUNC " + shortFunctionName(fState) + " " +
-                                  "STYPE int " +
-                                  "FINALFUNC " + shortFunctionName(fFinal) + " " +
-                                  "INITCOND 42");
-
-        // 42 + 1 + 2 + 3 = 48
-        assertRows(execute("SELECT " + a + "(b) FROM %s"), row("48"));
-
-        execute("DROP AGGREGATE " + a + "(int)");
-
-        execute("DROP FUNCTION " + fFinal + "(int)");
-        execute("DROP FUNCTION " + fState + "(int, int)");
-
-        assertInvalidMessage("Unknown function", "SELECT " + a + "(b) FROM %s");
-    }
-
-    @Test
-    public void testJavascriptAggregateSimple() throws Throwable
-    {
-        createTable("CREATE TABLE %s (a int primary key, b int)");
-        execute("INSERT INTO %s (a, b) VALUES (1, 1)");
-        execute("INSERT INTO %s (a, b) VALUES (2, 2)");
-        execute("INSERT INTO %s (a, b) VALUES (3, 3)");
-
-        String fState = createFunction(KEYSPACE,
-                                       "int, int",
-                                       "CREATE FUNCTION %s(a int, b int) " +
-                                       "CALLED ON NULL INPUT " +
-                                       "RETURNS int " +
-                                       "LANGUAGE javascript " +
-                                       "AS 'a + b;'");
-
-        String a = createAggregate(KEYSPACE,
-                                   "int, int",
-                                   "CREATE AGGREGATE %s(int) " +
-                                   "SFUNC " + shortFunctionName(fState) + " " +
-                                   "STYPE int ");
-
-        // 1 + 2 + 3 = 6
-        assertRows(execute("SELECT " + a + "(b) FROM %s"), row(6));
-
-        execute("DROP AGGREGATE " + a + "(int)");
-
-        execute("DROP FUNCTION " + fState + "(int, int)");
-
-        assertInvalidMessage("Unknown function", "SELECT " + a + "(b) FROM %s");
-    }
-
-    @Test
     public void testFunctionDropPreparedStatement() throws Throwable
     {
         String otherKS = "cqltest_foo";
@@ -1228,8 +1153,8 @@ public class AggregationTest extends CQLTester
                                            "CREATE FUNCTION %s(a int, b int) " +
                                            "CALLED ON NULL INPUT " +
                                            "RETURNS int " +
-                                           "LANGUAGE javascript " +
-                                           "AS 'a + b;'");
+                                           "LANGUAGE java " +
+                                           "AS ' return a + b;'");
 
             String a = createAggregate(otherKS,
                                        "int",
@@ -1271,8 +1196,8 @@ public class AggregationTest extends CQLTester
                                        "CREATE FUNCTION %s(a int, b int) " +
                                        "CALLED ON NULL INPUT " +
                                        "RETURNS int " +
-                                       "LANGUAGE javascript " +
-                                       "AS 'a + b;'");
+                                       "LANGUAGE java " +
+                                       "AS ' return a + b;'");
 
         String a = createAggregate(KEYSPACE,
                                    "int",
@@ -2056,7 +1981,7 @@ public class AggregationTest extends CQLTester
 
             AbstractType<?> compositeType = TypeParser.parse(type);
             ByteBuffer compositeTypeValue = compositeType.fromString("s@foo:i@32");
-            String compositeTypeString = compositeType.asCQL3Type().toCQLLiteral(compositeTypeValue, ProtocolVersion.CURRENT);
+            String compositeTypeString = compositeType.asCQL3Type().toCQLLiteral(compositeTypeValue);
             // ensure that the composite type is serialized using the 'blob syntax'
             assertTrue(compositeTypeString.startsWith("0x"));
 

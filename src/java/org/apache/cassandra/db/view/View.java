@@ -147,7 +147,7 @@ public class View
      * @param nowInSec the current time in seconds (to decide what is live and what isn't).
      * @return {@code true} if {@code baseRow} matches the view filters, {@code false} otherwise.
      */
-    public boolean matchesViewFilter(DecoratedKey partitionKey, Row baseRow, int nowInSec)
+    public boolean matchesViewFilter(DecoratedKey partitionKey, Row baseRow, long nowInSec)
     {
         return getReadQuery().selectsClustering(partitionKey, baseRow.clustering())
             && getSelectStatement().rowFilterForInternalCalls().isSatisfiedBy(baseCfs.metadata(), partitionKey, baseRow, nowInSec);
@@ -162,14 +162,14 @@ public class View
         if (null == select)
         {
             SelectStatement.Parameters parameters =
-                new SelectStatement.Parameters(Collections.emptyMap(),
+                new SelectStatement.Parameters(Collections.emptyList(),
                                                Collections.emptyList(),
                                                false,
                                                true,
                                                false);
 
             SelectStatement.RawStatement rawSelect =
-                new SelectStatement.RawStatement(new QualifiedName(baseCfs.keyspace.getName(), baseCfs.name),
+                new SelectStatement.RawStatement(new QualifiedName(baseCfs.getKeyspaceName(), baseCfs.name),
                                                  parameters,
                                                  selectClause(),
                                                  definition.whereClause,

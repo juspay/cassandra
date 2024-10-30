@@ -23,21 +23,27 @@ package org.apache.cassandra.cache;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Iterables;
 
-import com.github.benmanes.caffeine.cache.*;
+import com.github.benmanes.caffeine.cache.CacheLoader;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.LoadingCache;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+import com.github.benmanes.caffeine.cache.RemovalListener;
 import org.apache.cassandra.concurrent.ImmediateExecutor;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
-import org.apache.cassandra.io.util.*;
+import org.apache.cassandra.io.util.ChannelProxy;
+import org.apache.cassandra.io.util.ChunkReader;
+import org.apache.cassandra.io.util.FileHandle;
+import org.apache.cassandra.io.util.Rebufferer;
+import org.apache.cassandra.io.util.RebuffererFactory;
 import org.apache.cassandra.metrics.ChunkCacheMetrics;
 import org.apache.cassandra.utils.memory.BufferPool;
 import org.apache.cassandra.utils.memory.BufferPools;
 
-public class ChunkCache
-        implements CacheLoader<ChunkCache.Key, ChunkCache.Buffer>, RemovalListener<ChunkCache.Key, ChunkCache.Buffer>, CacheSize
+public class ChunkCache implements CacheLoader<ChunkCache.Key, ChunkCache.Buffer>, RemovalListener<ChunkCache.Key, ChunkCache.Buffer>, CacheSize
 {
     public static final int RESERVED_POOL_SPACE_IN_MiB = 32;
     public static final long cacheSize = 1024L * 1024L * Math.max(0, DatabaseDescriptor.getFileCacheSizeInMiB() - RESERVED_POOL_SPACE_IN_MiB);
@@ -165,12 +171,12 @@ public class ChunkCache
         buffer.release();
     }
 
-    public void close()
+    public void clear()
     {
         cache.invalidateAll();
     }
 
-    private RebuffererFactory wrap(ChunkReader file)
+    public RebuffererFactory wrap(ChunkReader file)
     {
         return new CachingRebufferer(file);
     }
@@ -194,14 +200,6 @@ public class ChunkCache
     public void invalidateFile(String fileName)
     {
         cache.invalidateAll(Iterables.filter(cache.asMap().keySet(), x -> x.path.equals(fileName)));
-    }
-
-    @VisibleForTesting
-    public void enable(boolean enabled)
-    {
-        ChunkCache.enabled = enabled;
-        cache.invalidateAll();
-        metrics.reset();
     }
 
     // TODO: Invalidate caches for obsoleted/MOVED_START tables?

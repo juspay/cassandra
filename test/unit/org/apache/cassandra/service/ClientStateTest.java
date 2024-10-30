@@ -21,14 +21,12 @@ package org.apache.cassandra.service;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.google.common.collect.Iterables;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.auth.AuthCacheService;
-import org.apache.cassandra.auth.AuthKeyspace;
 import org.apache.cassandra.auth.AuthTestUtils;
 import org.apache.cassandra.auth.AuthenticatedUser;
 import org.apache.cassandra.auth.DataResource;
@@ -36,33 +34,30 @@ import org.apache.cassandra.auth.IResource;
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.auth.Roles;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.distributed.shared.WithProperties;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.ORG_APACHE_CASSANDRA_DISABLE_MBEAN_REGISTRATION;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 public class ClientStateTest
 {
+    static WithProperties properties;
+
     @BeforeClass
     public static void beforeClass()
     {
-        System.setProperty("org.apache.cassandra.disable_mbean_registration", "true");
+        properties = new WithProperties().set(ORG_APACHE_CASSANDRA_DISABLE_MBEAN_REGISTRATION, true);
         SchemaLoader.prepareServer();
         DatabaseDescriptor.setAuthFromRoot(true);
-        // create the system_auth keyspace so the IRoleManager can function as normal
-        SchemaLoader.createKeyspace(SchemaConstants.AUTH_KEYSPACE_NAME,
-                                    KeyspaceParams.simple(1),
-                                    Iterables.toArray(AuthKeyspace.metadata().tables, TableMetadata.class));
-
+        Roles.init();
         AuthCacheService.initializeAndRegisterCaches();
     }
 
     @AfterClass
     public static void afterClass()
     {
-        System.clearProperty("org.apache.cassandra.disable_mbean_registration");
+        properties.close();
     }
 
     @Test

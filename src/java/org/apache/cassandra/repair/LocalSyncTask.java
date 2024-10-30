@@ -64,13 +64,13 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
     private final AtomicBoolean active = new AtomicBoolean(true);
     private final Promise<StreamPlan> planPromise = new AsyncPromise<>();
 
-    public LocalSyncTask(RepairJobDesc desc, InetAddressAndPort local, InetAddressAndPort remote,
+    public LocalSyncTask(SharedContext ctx, RepairJobDesc desc, InetAddressAndPort local, InetAddressAndPort remote,
                          List<Range<Token>> diff, TimeUUID pendingRepair,
                          boolean requestRanges, boolean transferRanges, PreviewKind previewKind)
     {
-        super(desc, local, remote, diff, previewKind);
+        super(ctx, desc, local, remote, diff, previewKind);
         Preconditions.checkArgument(requestRanges || transferRanges, "Nothing to do in a sync job");
-        Preconditions.checkArgument(local.equals(FBUtilities.getBroadcastAddressAndPort()));
+        Preconditions.checkArgument(local.equals(ctx.broadcastAddressAndPort()));
 
         this.pendingRepair = pendingRepair;
         this.requestRanges = requestRanges;
@@ -119,7 +119,7 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
             Tracing.traceRepair(message);
 
             StreamPlan plan = createStreamPlan();
-            plan.execute();
+            ctx.streamExecutor().execute(plan);
             planPromise.setSuccess(plan);
         }
     }
@@ -130,6 +130,7 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
         return true;
     }
 
+    @Override
     public void handleStreamEvent(StreamEvent event)
     {
         if (state == null)
@@ -149,7 +150,7 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
                 state.trace("{}/{} ({}%) {} idx:{}{}",
                             new Object[] { FBUtilities.prettyPrintMemory(pi.currentBytes),
                                            FBUtilities.prettyPrintMemory(pi.totalBytes),
-                                           pi.currentBytes * 100 / pi.totalBytes,
+                                           pi.progressPercentage(),
                                            pi.direction == ProgressInfo.Direction.OUT ? "sent to" : "received from",
                                            pi.sessionIndex,
                                            pi.peer });
@@ -193,8 +194,9 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
     }
 
     @Override
-    public void abort()
+    public void abort(Throwable reason)
     {
+        super.abort(reason);
         planPromise.addCallback((plan, cause) ->
         {
             assert plan != null : "StreamPlan future should never be completed exceptionally";

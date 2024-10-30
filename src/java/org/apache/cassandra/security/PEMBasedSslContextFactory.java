@@ -20,7 +20,6 @@ package org.apache.cassandra.security;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.PrivateKey;
@@ -55,7 +54,7 @@ import org.apache.cassandra.io.util.File;
  * below,
  *
  * <b>Configuration: PEM keys/certs defined inline (mind the spaces in the YAML!)</b>
- * <pre>
+ * {@code
  *     client/server_encryption_options:
  *      ssl_context_factory:
  *         class_name: org.apache.cassandra.security.PEMBasedSslContextFactory
@@ -74,16 +73,16 @@ import org.apache.cassandra.io.util.File;
  *               -----BEGIN CERTIFICATE-----
  *               <your base64 encoded certificate>
  *               -----END CERTIFICATE-----
- * </pre>
+ * }
  *
  * <b>Configuration: PEM keys/certs defined in files</b>
  * <pre>
  *     client/server_encryption_options:
  *      ssl_context_factory:
  *         class_name: org.apache.cassandra.security.PEMBasedSslContextFactory
- *      keystore: <file path to the keystore file in the PEM format with the private key and the certificate chain>
- *      keystore_password: "<your password if the private key is encrypted with a password>"
- *      truststore: <file path to the truststore file in the PEM format>
+ *      keystore: {@code <file path to the keystore file in the PEM format with the private key and the certificate chain>}
+ *      keystore_password: {@code "<your password if the private key is encrypted with a password>"}
+ *      truststore: {@code <file path to the truststore file in the PEM format>}
  * </pre>
  */
 public final class PEMBasedSslContextFactory extends FileBasedSslContextFactory
@@ -109,11 +108,6 @@ public final class PEMBasedSslContextFactory extends FileBasedSslContextFactory
         {
             final String msg = String.format("'%skeystore_password' and '%skey_password' both configurations are given and the values do not match", keyName, keyName);
             throw new IllegalArgumentException(msg);
-        }
-        else
-        {
-            logger.warn("'{}keystore_password' and '{}key_password' both are configured but since the values match it's " +
-                        "okay. Ideally you should only specify one of them.", keyName, keyName);
         }
     }
 
@@ -306,7 +300,7 @@ public final class PEMBasedSslContextFactory extends FileBasedSslContextFactory
 
     private String readPEMFile(String file) throws IOException
     {
-        return new String(Files.readAllBytes(Paths.get(file)));
+        return new String(Files.readAllBytes(File.getPath(file)));
     }
 
     /**

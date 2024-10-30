@@ -24,7 +24,6 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
 import org.awaitility.Awaitility;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.cql3.CQLTester;
@@ -39,12 +38,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class GossipInfoTableTest extends CQLTester
 {
-    @BeforeClass
-    public static void setUpClass()
-    {
-        CQLTester.setUpClass();
-    }
-
     @Test
     public void testSelectAllWhenGossipInfoIsEmpty() throws Throwable
     {
@@ -77,7 +70,7 @@ public class GossipInfoTableTest extends CQLTester
 
             assertThat(resultSet.size()).isEqualTo(1);
             UntypedResultSet.Row row = resultSet.one();
-            assertThat(row.getColumns().size()).isEqualTo(64);
+            assertThat(row.getColumns().size()).isEqualTo(66);
 
             assertThat(endpoint).isNotNull();
             assertThat(localState).isNotNull();

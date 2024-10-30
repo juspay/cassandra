@@ -25,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.ExecutorPlus;
+import org.apache.cassandra.config.CassandraRelevantProperties;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Mutation;
@@ -57,7 +58,7 @@ public class PaxosCommit<OnDone extends Consumer<? super PaxosCommit.Status>> ex
     public static final RequestHandler requestHandler = new RequestHandler();
     private static final Logger logger = LoggerFactory.getLogger(PaxosCommit.class);
 
-    private static volatile boolean ENABLE_DC_LOCAL_COMMIT = Boolean.parseBoolean(System.getProperty("cassandra.enable_dc_local_commit", "true"));
+    private static volatile boolean ENABLE_DC_LOCAL_COMMIT = CassandraRelevantProperties.ENABLE_DC_LOCAL_COMMIT.getBoolean();
 
     public static boolean getEnableDcLocalCommit()
     {
@@ -127,7 +128,7 @@ public class PaxosCommit<OnDone extends Consumer<? super PaxosCommit.Status>> ex
     /**
      * Submit the proposal for commit with all replicas, and wait synchronously until at most {@code deadline} for the result
      */
-    static Paxos.Async<Status> commit(Agreed commit, Participants participants, ConsistencyLevel consistencyForConsensus, ConsistencyLevel consistencyForCommit, @Deprecated boolean allowHints)
+    static Paxos.Async<Status> commit(Agreed commit, Participants participants, ConsistencyLevel consistencyForConsensus, ConsistencyLevel consistencyForCommit, /** @deprecated See CASSANDRA-17164 */ @Deprecated(since = "4.1") boolean allowHints)
     {
         // to avoid unnecessary object allocations we extend PaxosPropose to implements Paxos.Async
         class Async extends PaxosCommit<ConditionAsConsumer<Status>> implements Paxos.Async<Status>
@@ -161,7 +162,7 @@ public class PaxosCommit<OnDone extends Consumer<? super PaxosCommit.Status>> ex
     /**
      * Submit the proposal for commit with all replicas, and wait synchronously until at most {@code deadline} for the result
      */
-    static <T extends Consumer<Status>> T commit(Agreed commit, Participants participants, ConsistencyLevel consistencyForConsensus, ConsistencyLevel consistencyForCommit, @Deprecated boolean allowHints, T onDone)
+    static <T extends Consumer<Status>> T commit(Agreed commit, Participants participants, ConsistencyLevel consistencyForConsensus, ConsistencyLevel consistencyForCommit, /** @deprecated See CASSANDRA-17164 */ @Deprecated(since = "4.1") boolean allowHints, T onDone)
     {
         new PaxosCommit<>(commit, allowHints, consistencyForConsensus, consistencyForCommit, participants, onDone)
                 .start(participants, true);
@@ -174,9 +175,11 @@ public class PaxosCommit<OnDone extends Consumer<? super PaxosCommit.Status>> ex
     void start(Participants participants, boolean async)
     {
         boolean executeOnSelf = false;
-        Message<Agreed> commitMessage = Message.out(PAXOS_COMMIT_REQ, commit);
-        Message<Mutation> mutationMessage = ENABLE_DC_LOCAL_COMMIT && consistencyForConsensus.isDatacenterLocal()
-                                            ? Message.out(PAXOS2_COMMIT_REMOTE_REQ, commit.makeMutation()) : null;
+        Message<Agreed> commitMessage = Message.out(PAXOS_COMMIT_REQ, commit, participants.isUrgent());
+
+        Message<Mutation> mutationMessage = null;
+        if (ENABLE_DC_LOCAL_COMMIT && consistencyForConsensus.isDatacenterLocal())
+            mutationMessage = Message.out(PAXOS2_COMMIT_REMOTE_REQ, commit.makeMutation(), participants.isUrgent());
 
         for (int i = 0, mi = participants.allLive.size(); i < mi ; ++i)
             executeOnSelf |= isSelfOrSend(commitMessage, mutationMessage, participants.allLive.endpoint(i));

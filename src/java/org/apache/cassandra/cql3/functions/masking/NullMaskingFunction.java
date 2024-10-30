@@ -21,11 +21,14 @@ package org.apache.cassandra.cql3.functions.masking;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.cassandra.cql3.functions.Arguments;
+import org.apache.cassandra.cql3.functions.FunctionArguments;
 import org.apache.cassandra.cql3.functions.FunctionFactory;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.cql3.functions.FunctionParameter;
 import org.apache.cassandra.cql3.functions.NativeFunction;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
@@ -45,7 +48,13 @@ public class NullMaskingFunction extends MaskingFunction
     }
 
     @Override
-    public final ByteBuffer execute(ProtocolVersion protocolVersion, List<ByteBuffer> parameters)
+    public Arguments newArguments(ProtocolVersion version)
+    {
+        return FunctionArguments.newNoopInstance(version, 1);
+    }
+
+    @Override
+    public ByteBuffer execute(Arguments arguments) throws InvalidRequestException
     {
         return null;
     }

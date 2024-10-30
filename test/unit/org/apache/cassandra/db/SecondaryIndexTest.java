@@ -20,7 +20,10 @@ package org.apache.cassandra.db;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -28,16 +31,20 @@ import java.util.concurrent.TimeUnit;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.cql3.statements.schema.IndexTarget;
 import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.partitions.*;
+import org.apache.cassandra.db.partitions.FilteredPartition;
+import org.apache.cassandra.db.partitions.PartitionIterator;
+import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
+import org.apache.cassandra.db.partitions.UnfilteredPartitionIterators;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.index.Index;
+import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.SchemaTestUtil;
@@ -120,7 +127,7 @@ public class SecondaryIndexTest
                                       .filterOn("birthdate", Operator.EQ, 1L)
                                       .build();
 
-        Index.Searcher searcher = rc.getIndex(cfs).searcherFor(rc);
+        Index.Searcher searcher = rc.indexSearcher();
         try (ReadExecutionController executionController = rc.executionController();
              UnfilteredPartitionIterator pi = searcher.search(executionController))
         {
@@ -207,7 +214,7 @@ public class SecondaryIndexTest
 
         // verify that it's not being indexed under any other value either
         ReadCommand rc = Util.cmd(cfs).build();
-        assertNull(rc.getIndex(cfs));
+        assertNull(rc.indexSearcher());
 
         // resurrect w/ a newer timestamp
         new RowUpdateBuilder(cfs.metadata(), 2, "k1").clustering("c").add("birthdate", 1L).build().apply();;
@@ -225,13 +232,13 @@ public class SecondaryIndexTest
         // todo - checking the # of index searchers for the command is probably not the best thing to test here
         RowUpdateBuilder.deleteRow(cfs.metadata(), 3, "k1", "c").applyUnsafe();
         rc = Util.cmd(cfs).build();
-        assertNull(rc.getIndex(cfs));
+        assertNull(rc.indexSearcher());
 
         // make sure obsolete mutations don't generate an index entry
         // todo - checking the # of index searchers for the command is probably not the best thing to test here
         new RowUpdateBuilder(cfs.metadata(), 3, "k1").clustering("c").add("birthdate", 1L).build().apply();;
         rc = Util.cmd(cfs).build();
-        assertNull(rc.getIndex(cfs));
+        assertNull(rc.indexSearcher());
     }
 
     @Test
@@ -546,7 +553,7 @@ public class SecondaryIndexTest
                              .filterOn("notbirthdate", Operator.EQ, 0L)
                              .build();
 
-        assertEquals("notbirthdate_key_index", rc.indexMetadata().name);
+        assertEquals("notbirthdate_key_index", rc.indexQueryPlan().getFirst().getIndexMetadata().name);
     }
 
     private void assertIndexedNone(ColumnFamilyStore cfs, ByteBuffer col, Object val)
@@ -562,7 +569,7 @@ public class SecondaryIndexTest
         ColumnMetadata cdef = cfs.metadata().getColumn(col);
 
         ReadCommand rc = Util.cmd(cfs).filterOn(cdef.name.toString(), Operator.EQ, ((AbstractType) cdef.cellValueType()).decompose(val)).build();
-        Index.Searcher searcher = rc.getIndex(cfs).searcherFor(rc);
+        Index.Searcher searcher = rc.indexSearcher();
         if (count != 0)
             assertNotNull(searcher);
 

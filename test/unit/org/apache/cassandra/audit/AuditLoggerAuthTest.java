@@ -42,6 +42,7 @@ import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.service.EmbeddedCassandraService;
 import org.hamcrest.CoreMatchers;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.SUPERUSER_SETUP_DELAY_MS;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
@@ -68,14 +69,14 @@ public class AuditLoggerAuthTest
     public static void setup() throws Exception
     {
         OverrideConfigurationLoader.override((config) -> {
-            config.authenticator = "PasswordAuthenticator";
-            config.role_manager = "CassandraRoleManager";
-            config.authorizer = "CassandraAuthorizer";
+            config.authenticator = new ParameterizedClass("PasswordAuthenticator");
+            config.role_manager = new ParameterizedClass("CassandraRoleManager");
+            config.authorizer = new ParameterizedClass("CassandraAuthorizer");
             config.audit_logging_options.enabled = true;
             config.audit_logging_options.logger = new ParameterizedClass("InMemoryAuditLogger", null);
         });
 
-        System.setProperty("cassandra.superuser_setup_delay_ms", "0");
+        SUPERUSER_SETUP_DELAY_MS.setLong(0);
         embedded = ServerTestUtils.startEmbeddedCassandraService();
 
         executeWithCredentials(
@@ -209,6 +210,16 @@ public class AuditLoggerAuthTest
         assertTrue(getInMemAuditLogger().size() > 0);
         AuditLogEntry logEntry = getInMemAuditLogger().poll();
         assertLogEntry(logEntry, AuditLogEntryType.LIST_ROLES, cql, CASS_USER, "");
+    }
+
+    @Test
+    public void testCqlLISTSUPERUSERSAuditing()
+    {
+        String cql = "LIST SUPERUSERS";
+        executeWithCredentials(Arrays.asList(cql), CASS_USER, CASS_PW, AuditLogEntryType.LOGIN_SUCCESS);
+        assertTrue(getInMemAuditLogger().size() > 0);
+        AuditLogEntry logEntry = getInMemAuditLogger().poll();
+        assertLogEntry(logEntry, AuditLogEntryType.LIST_SUPERUSERS, cql, CASS_USER, "");
     }
 
     @Test

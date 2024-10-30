@@ -24,6 +24,8 @@ package org.apache.cassandra.stress.settings;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
+
 public enum CliOption
 {
     POP("Population distribution and intra-partition visit order", SettingsPopulation.helpPrinter()),
@@ -37,8 +39,11 @@ public enum CliOption
     LOG("Where to log progress to, and the interval at which to do it", SettingsLog.helpPrinter()),
     TRANSPORT("Custom transport factories", SettingsTransport.helpPrinter()),
     PORT("The port to connect to cassandra nodes on", SettingsPort.helpPrinter()),
+    JMX("JMX credentials", SettingsJMX.helpPrinter()),
     GRAPH("-graph", "Graph recorded metrics", SettingsGraph.helpPrinter()),
-    TOKENRANGE("Token range settings", SettingsTokenRange.helpPrinter())
+    TOKENRANGE("Token range settings", SettingsTokenRange.helpPrinter()),
+    CREDENTIALS_FILE("Credentials file for CQL, JMX and transport", SettingsCredentials.helpPrinter()),
+    REPORTING("Frequency of printing statistics and header for stress output", SettingsReporting.helpPrinter());
     ;
 
     private static final Map<String, CliOption> LOOKUP;
@@ -47,7 +52,7 @@ public enum CliOption
         final Map<String, CliOption> lookup = new HashMap<>();
         for (CliOption cmd : values())
         {
-            lookup.put("-" + cmd.toString().toLowerCase(), cmd);
+            lookup.put("-" + toLowerCaseLocalized(cmd.toString()), cmd);
             if (cmd.extraName != null)
                 lookup.put(cmd.extraName, cmd);
         }
@@ -56,18 +61,19 @@ public enum CliOption
 
     public static CliOption get(String command)
     {
-        return LOOKUP.get(command.toLowerCase());
+        return LOOKUP.get(toLowerCaseLocalized(command));
     }
 
     public final String extraName;
     public final String description;
     private final Runnable helpPrinter;
 
-    private CliOption(String description, Runnable helpPrinter)
+    CliOption(String description, Runnable helpPrinter)
     {
         this(null, description, helpPrinter);
     }
-    private CliOption(String extraName, String description, Runnable helpPrinter)
+
+    CliOption(String extraName, String description, Runnable helpPrinter)
     {
         this.extraName = extraName;
         this.description = description;
@@ -79,4 +85,8 @@ public enum CliOption
         helpPrinter.run();
     }
 
+    public String toString()
+    {
+        return name().replaceAll("_", "-");
+    }
 }

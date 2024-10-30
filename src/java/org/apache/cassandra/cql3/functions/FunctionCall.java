@@ -26,10 +26,14 @@ import java.util.stream.Collectors;
 
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.cql3.statements.RequestValidations;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.terms.MultiElements;
+import org.apache.cassandra.cql3.terms.Term;
+import org.apache.cassandra.cql3.terms.Terms;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.schema.UserFunctions;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static org.apache.cassandra.cql3.statements.RequestValidations.invalidRequest;
@@ -57,31 +61,35 @@ public class FunctionCall extends Term.NonTerminal
             t.collectMarkerSpecification(boundNames);
     }
 
+    @Override
     public Term.Terminal bind(QueryOptions options) throws InvalidRequestException
     {
-        return makeTerminal(fun, bindAndGet(options), options.getProtocolVersion());
+        return makeTerminal(fun, bindAndGet(options));
     }
 
+    @Override
     public ByteBuffer bindAndGet(QueryOptions options) throws InvalidRequestException
     {
-        List<ByteBuffer> buffers = new ArrayList<>(terms.size());
-        for (Term t : terms)
+        Arguments arguments = fun.newArguments(options.getProtocolVersion());
+        for (int i = 0, m = terms.size(); i < m; i++)
         {
-            ByteBuffer functionArg = t.bindAndGet(options);
-            RequestValidations.checkBindValueSet(functionArg, "Invalid unset value for argument in call to function %s", fun.name().name);
-            buffers.add(functionArg);
+            Term t = terms.get(i);
+            ByteBuffer argument = t.bindAndGet(options);
+            RequestValidations.checkBindValueSet(argument, "Invalid unset value for argument in call to function %s", fun.name().name);
+            arguments.set(i, argument);
         }
-        return executeInternal(options.getProtocolVersion(), fun, buffers);
+        return executeInternal(fun, arguments);
     }
 
-    private static ByteBuffer executeInternal(ProtocolVersion protocolVersion, ScalarFunction fun, List<ByteBuffer> params) throws InvalidRequestException
+    private static ByteBuffer executeInternal(ScalarFunction fun, Arguments arguments) throws InvalidRequestException
     {
-        ByteBuffer result = fun.execute(protocolVersion, params);
+        ByteBuffer result = fun.execute(arguments);
         try
         {
-            // Check the method didn't lied on it's declared return type
+            // Check the method didn't lie on it's declared return type
             if (result != null)
                 fun.returnType().validate(result);
+
             return result;
         }
         catch (MarshalException e)
@@ -101,26 +109,13 @@ public class FunctionCall extends Term.NonTerminal
         return false;
     }
 
-    private static Term.Terminal makeTerminal(Function fun, ByteBuffer result, ProtocolVersion version) throws InvalidRequestException
+    private static Term.Terminal makeTerminal(Function fun, ByteBuffer result) throws InvalidRequestException
     {
         if (result == null)
             return null;
-        if (fun.returnType().isCollection())
-        {
-            switch (((CollectionType<?>) fun.returnType()).kind)
-            {
-                case LIST:
-                    return Lists.Value.fromSerialized(result, (ListType<?>) fun.returnType());
-                case SET:
-                    return Sets.Value.fromSerialized(result, (SetType<?>) fun.returnType());
-                case MAP:
-                    return Maps.Value.fromSerialized(result, (MapType<?, ?>) fun.returnType());
-            }
-        }
-        else if (fun.returnType().isUDT())
-        {
-            return UserTypes.Value.fromSerialized(result, (UserType) fun.returnType());
-        }
+
+        if (fun.returnType() instanceof MultiElementType<?>)
+            return MultiElements.Value.fromSerialized(result, (MultiElementType<?>) fun.returnType());
 
         return new Constants.Value(result);
     }
@@ -156,7 +151,7 @@ public class FunctionCall extends Term.NonTerminal
 
         public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
-            Function fun = FunctionResolver.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type);
+            Function fun = FunctionResolver.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type, UserFunctions.getCurrentUserFunctions(name, keyspace));
             if (fun == null)
                 throw invalidRequest("Unknown function %s called", name);
             if (fun.isAggregate())
@@ -200,7 +195,7 @@ public class FunctionCall extends Term.NonTerminal
             // later with a more helpful error message that if we were to return false here.
             try
             {
-                Function fun = FunctionResolver.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type);
+                Function fun = FunctionResolver.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type, UserFunctions.getCurrentUserFunctions(name, keyspace));
 
                 // Because the return type of functions built by factories is not fixed but depending on the types of
                 // their arguments, we'll always get EXACT_MATCH.  To handle potentially ambiguous function calls with
@@ -227,7 +222,7 @@ public class FunctionCall extends Term.NonTerminal
         {
             try
             {
-                Function fun = FunctionResolver.get(keyspace, name, terms, null, null, null);
+                Function fun = FunctionResolver.get(keyspace, name, terms, null, null, null, UserFunctions.getCurrentUserFunctions(name, keyspace));
                 return fun == null ? null : fun.returnType();
             }
             catch (InvalidRequestException e)
@@ -241,6 +236,17 @@ public class FunctionCall extends Term.NonTerminal
             CqlBuilder cqlNameBuilder = new CqlBuilder();
             name.appendCqlTo(cqlNameBuilder);
             return cqlNameBuilder + terms.stream().map(Term.Raw::getText).collect(Collectors.joining(", ", "(", ")"));
+        }
+
+        @Override
+        public boolean containsBindMarker()
+        {
+            for (Term.Raw t : terms)
+            {
+                if (t.containsBindMarker())
+                    return true;
+            }
+            return false;
         }
     }
 }

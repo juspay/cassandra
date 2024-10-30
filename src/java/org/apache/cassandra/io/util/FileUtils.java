@@ -35,7 +35,6 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -52,9 +51,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import com.google.common.util.concurrent.RateLimiter;
 import com.google.common.base.Preconditions;
-
+import com.google.common.util.concurrent.RateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -210,27 +208,37 @@ public final class FileUtils
 
     public static void createHardLinkWithoutConfirm(String from, String to)
     {
+        createHardLinkWithoutConfirm(new File(from), new File(to));
+    }
+
+    public static void createHardLinkWithoutConfirm(File from, File to)
+    {
         try
         {
-            createHardLink(new File(from), new File(to));
+            createHardLink(from, to);
         }
         catch (FSWriteError fse)
         {
             if (logger.isTraceEnabled())
-                logger.trace("Could not hardlink file " + from + " to " + to, fse);
+                logger.trace("Could not hardlink file {} to {}", from, to, fse);
         }
     }
 
     public static void copyWithOutConfirm(String from, String to)
     {
+        copyWithOutConfirm(new File(from), new File(to));
+    }
+
+    public static void copyWithOutConfirm(File from, File to)
+    {
         try
         {
-            Files.copy(Paths.get(from), Paths.get(to));
+            Files.copy(from.toPath(), to.toPath());
         }
         catch (IOException e)
         {
             if (logger.isTraceEnabled())
-                logger.trace("Could not copy file" + from + " to " + to, e);
+                logger.trace("Could not copy file {} to {}", from, to, e);
         }
     }
 
@@ -418,6 +426,14 @@ public final class FileUtils
         }
     }
 
+    public static String stringifyFileSize(long bytes, boolean humanReadable)
+    {
+        if (humanReadable)
+            return stringifyFileSize(bytes);
+        else
+            return Long.toString(bytes);
+    }
+
     public static String stringifyFileSize(double value)
     {
         double d;
@@ -488,6 +504,9 @@ public final class FileUtils
      */
     public static long folderSize(File folder)
     {
+        if (!folder.exists())
+            return 0;
+
         final long [] sizeArr = {0L};
         try
         {
@@ -498,6 +517,15 @@ public final class FileUtils
                 {
                     sizeArr[0] += attrs.size();
                     return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path path, IOException e) throws IOException
+                {
+                    if (e instanceof NoSuchFileException)
+                        return FileVisitResult.CONTINUE;
+                    else
+                        throw e;
                 }
             });
         }
@@ -603,25 +631,29 @@ public final class FileUtils
         fsErrorHandler.getAndSet(Optional.ofNullable(handler));
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void createDirectory(String directory)
     {
         createDirectory(new File(directory));
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void createDirectory(File directory)
     {
         PathUtils.createDirectoriesIfNotExists(directory.toPath());
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static boolean delete(String file)
     {
         return new File(file).tryDelete();
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void delete(File... files)
     {
         for (File file : files)
@@ -632,8 +664,10 @@ public final class FileUtils
      * Deletes all files and subdirectories under "dir".
      * @param dir Directory to be deleted
      * @throws FSWriteError if any part of the tree cannot be deleted
+     *
+     * @deprecated See CASSANDRA-16926
      */
-    @Deprecated
+    @Deprecated(since = "4.1")
     public static void deleteRecursiveWithThrottle(File dir, RateLimiter rateLimiter)
     {
         dir.deleteRecursive(rateLimiter);
@@ -643,8 +677,10 @@ public final class FileUtils
      * Deletes all files and subdirectories under "dir".
      * @param dir Directory to be deleted
      * @throws FSWriteError if any part of the tree cannot be deleted
+     *
+     * @deprecated See CASSANDRA-16926
      */
-    @Deprecated
+    @Deprecated(since = "4.1")
     public static void deleteRecursive(File dir)
     {
         dir.deleteRecursive();
@@ -653,56 +689,66 @@ public final class FileUtils
     /**
      * Schedules deletion of all file and subdirectories under "dir" on JVM shutdown.
      * @param dir Directory to be deleted
+     *
+     * @deprecated See CASSANDRA-16926
      */
-    @Deprecated
+    @Deprecated(since = "4.1")
     public static void deleteRecursiveOnExit(File dir)
     {
         dir.deleteRecursiveOnExit();
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static boolean isSubDirectory(File parent, File child)
     {
         return parent.isAncestorOf(child);
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static Throwable deleteWithConfirm(File file, Throwable accumulate)
     {
         return file.delete(accumulate, null);
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static Throwable deleteWithConfirm(File file, Throwable accumulate, RateLimiter rateLimiter)
     {
         return file.delete(accumulate, rateLimiter);
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void deleteWithConfirm(String file)
     {
         deleteWithConfirm(new File(file));
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void deleteWithConfirm(File file)
     {
         file.delete();
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void renameWithOutConfirm(String from, String to)
     {
         new File(from).tryMove(new File(to));
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void renameWithConfirm(String from, String to)
     {
         renameWithConfirm(new File(from), new File(to));
     }
 
-    @Deprecated
+    /** @deprecated See CASSANDRA-16926 */
+    @Deprecated(since = "4.1")
     public static void renameWithConfirm(File from, File to)
     {
         from.move(to);
@@ -776,6 +822,25 @@ public final class FileUtils
 
                 logger.warn("Cannot delete the directory {} as it is not empty. (Content: {})", path, content);
             }
+        }
+    }
+
+    public static int getBlockSize(File directory)
+    {
+        File f = FileUtils.createTempFile("block-size-test", ".tmp", directory);
+        try
+        {
+            long bs = Files.getFileStore(f.toPath()).getBlockSize();
+            assert bs >= 0 && bs <= Integer.MAX_VALUE;
+            return (int) bs;
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException("Failed to get file block size in " + directory, e);
+        }
+        finally
+        {
+            f.tryDelete();
         }
     }
 }

@@ -35,15 +35,22 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.exceptions.CoordinatorBehindException;
+import org.apache.cassandra.exceptions.UnknownTableException;
 import org.apache.cassandra.index.IndexRegistry;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.metrics.TCMMetrics;
+import org.apache.cassandra.tcm.ClusterMetadata;
+import org.apache.cassandra.tcm.Epoch;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.utils.btree.BTree;
 import org.apache.cassandra.utils.btree.UpdateFunction;
 import org.apache.cassandra.utils.vint.VIntCoding;
@@ -73,10 +80,12 @@ public class PartitionUpdate extends AbstractBTreePartition
     private final BTreePartitionData holder;
     private final DeletionInfo deletionInfo;
     private final TableMetadata metadata;
+    public final Epoch serializedAtEpoch;
 
     private final boolean canHaveShadowedData;
 
     private PartitionUpdate(TableMetadata metadata,
+                            Epoch serializedAtEpoch,
                             DecoratedKey key,
                             BTreePartitionData holder,
                             MutableDeletionInfo deletionInfo,
@@ -87,6 +96,7 @@ public class PartitionUpdate extends AbstractBTreePartition
         this.holder = holder;
         this.deletionInfo = deletionInfo;
         this.canHaveShadowedData = canHaveShadowedData;
+        this.serializedAtEpoch = serializedAtEpoch;
     }
 
     /**
@@ -101,7 +111,7 @@ public class PartitionUpdate extends AbstractBTreePartition
     {
         MutableDeletionInfo deletionInfo = MutableDeletionInfo.live();
         BTreePartitionData holder = new BTreePartitionData(RegularAndStaticColumns.NONE, BTree.empty(), deletionInfo, Rows.EMPTY_STATIC_ROW, EncodingStats.NO_STATS);
-        return new PartitionUpdate(metadata, key, holder, deletionInfo, false);
+        return new PartitionUpdate(metadata, metadata.epoch, key, holder, deletionInfo, false);
     }
 
     /**
@@ -114,11 +124,11 @@ public class PartitionUpdate extends AbstractBTreePartition
      *
      * @return the newly created partition deletion update.
      */
-    public static PartitionUpdate fullPartitionDelete(TableMetadata metadata, DecoratedKey key, long timestamp, int nowInSec)
+    public static PartitionUpdate fullPartitionDelete(TableMetadata metadata, DecoratedKey key, long timestamp, long nowInSec)
     {
         MutableDeletionInfo deletionInfo = new MutableDeletionInfo(timestamp, nowInSec);
         BTreePartitionData holder = new BTreePartitionData(RegularAndStaticColumns.NONE, BTree.empty(), deletionInfo, Rows.EMPTY_STATIC_ROW, EncodingStats.NO_STATS);
-        return new PartitionUpdate(metadata, key, holder, deletionInfo, false);
+        return new PartitionUpdate(metadata, metadata.epoch, key, holder, deletionInfo, false);
     }
 
     /**
@@ -144,7 +154,7 @@ public class PartitionUpdate extends AbstractBTreePartition
             staticRow == null ? Rows.EMPTY_STATIC_ROW : staticRow,
             EncodingStats.NO_STATS
         );
-        return new PartitionUpdate(metadata, key, holder, deletionInfo, false);
+        return new PartitionUpdate(metadata, metadata.epoch, key, holder, deletionInfo, false);
     }
 
     /**
@@ -186,13 +196,12 @@ public class PartitionUpdate extends AbstractBTreePartition
      * Warning: this method does not close the provided iterator, it is up to
      * the caller to close it.
      */
-    @SuppressWarnings("resource")
     public static PartitionUpdate fromIterator(UnfilteredRowIterator iterator, ColumnFilter filter)
     {
         iterator = UnfilteredRowIterators.withOnlyQueriedData(iterator, filter);
         BTreePartitionData holder = build(iterator, 16);
         MutableDeletionInfo deletionInfo = (MutableDeletionInfo) holder.deletionInfo;
-        return new PartitionUpdate(iterator.metadata(), iterator.partitionKey(), holder, deletionInfo, false);
+        return new PartitionUpdate(iterator.metadata(), iterator.metadata().epoch, iterator.partitionKey(), holder, deletionInfo, false);
     }
 
     /**
@@ -206,13 +215,12 @@ public class PartitionUpdate extends AbstractBTreePartition
      * Warning: this method does not close the provided iterator, it is up to
      * the caller to close it.
      */
-    @SuppressWarnings("resource")
     public static PartitionUpdate fromIterator(RowIterator iterator, ColumnFilter filter)
     {
         iterator = RowIterators.withOnlyQueriedData(iterator, filter);
         MutableDeletionInfo deletionInfo = MutableDeletionInfo.live();
         BTreePartitionData holder = build(iterator, deletionInfo, true);
-        return new PartitionUpdate(iterator.metadata(), iterator.partitionKey(), holder, deletionInfo, false);
+        return new PartitionUpdate(iterator.metadata(), iterator.metadata().epoch, iterator.partitionKey(), holder, deletionInfo, false);
     }
 
 
@@ -225,7 +233,7 @@ public class PartitionUpdate extends AbstractBTreePartition
                 columnSet.add(column.column());
 
         RegularAndStaticColumns columns = RegularAndStaticColumns.builder().addAll(columnSet).build();
-        return new PartitionUpdate(this.metadata, this.partitionKey, this.holder.withColumns(columns), this.deletionInfo.mutableCopy(), false);
+        return new PartitionUpdate(this.metadata, this.metadata.epoch, this.partitionKey, this.holder.withColumns(columns), this.deletionInfo.mutableCopy(), false);
     }
 
 
@@ -242,7 +250,6 @@ public class PartitionUpdate extends AbstractBTreePartition
      *
      * @return the deserialized update or {@code null} if {@code bytes == null}.
      */
-    @SuppressWarnings("resource")
     public static PartitionUpdate fromBytes(ByteBuffer bytes, int version)
     {
         if (bytes == null)
@@ -291,7 +298,7 @@ public class PartitionUpdate extends AbstractBTreePartition
      *
      * @return the newly created partition deletion update.
      */
-    public static PartitionUpdate fullPartitionDelete(TableMetadata metadata, ByteBuffer key, long timestamp, int nowInSec)
+    public static PartitionUpdate fullPartitionDelete(TableMetadata metadata, ByteBuffer key, long timestamp, long nowInSec)
     {
         return fullPartitionDelete(metadata, metadata.partitioner.decorateKey(key), timestamp, nowInSec);
     }
@@ -468,7 +475,7 @@ public class PartitionUpdate extends AbstractBTreePartition
 
     /**
      *
-     * @return the estimated number of rows affected by this mutation 
+     * @return the estimated number of rows affected by this mutation
      */
     public int affectedRowCount()
     {
@@ -509,7 +516,7 @@ public class PartitionUpdate extends AbstractBTreePartition
         for (Row row : this)
         {
             if (row.deletion().isLive())
-                // If the row is live, this will include simple tombstones as well as cells w/ actual data. 
+                // If the row is live, this will include simple tombstones as well as cells w/ actual data.
                 count += row.columnCount();
             else
                 // We have a row deletion, so account for the columns that might be deleted.
@@ -542,12 +549,19 @@ public class PartitionUpdate extends AbstractBTreePartition
      */
     public static SimpleBuilder simpleBuilder(TableMetadata metadata, Object... partitionKeyValues)
     {
-        return new SimpleBuilders.PartitionUpdateBuilder(metadata, partitionKeyValues);
+        // Here we dereference the current version of the supplied TableMetadata. The reason for this is that in some
+        // places we still reference static TableMetadata instances.
+        // For instance, TraceKeyspace contains Sessions & Events static members which are created at startup when the
+        // current epoch is Epoch.EMPTY. These are used to construct mutations when tracing is enabled and when the
+        // mutations are serialised and sent between replica & coordinator the epoch comparisons in PartitionUpdate
+        // deserializer trigger an IncompatibleSchemaException.
+        // TODO ultimately remove the use of static TableMetadata instances in System/Tracing/Auth keyspaces.
+        return new SimpleBuilders.PartitionUpdateBuilder(metadata.ref.get(), partitionKeyValues);
     }
 
-    public void validateIndexedColumns()
+    public void validateIndexedColumns(ClientState state)
     {
-        IndexRegistry.obtain(metadata()).validate(this);
+        IndexRegistry.obtain(metadata()).validate(this, state);
     }
 
     @VisibleForTesting
@@ -557,7 +571,7 @@ public class PartitionUpdate extends AbstractBTreePartition
                                                   MutableDeletionInfo deletionInfo,
                                                   boolean canHaveShadowedData)
     {
-        return new PartitionUpdate(metadata, key, holder, deletionInfo, canHaveShadowedData);
+        return new PartitionUpdate(metadata, metadata.epoch, key, holder, deletionInfo, canHaveShadowedData);
     }
 
     /**
@@ -597,7 +611,7 @@ public class PartitionUpdate extends AbstractBTreePartition
          * time in seconds will be used.
          * @return this builder.
          */
-        public SimpleBuilder nowInSec(int nowInSec);
+        public SimpleBuilder nowInSec(long nowInSec);
 
         /**
          * Adds the row identifier by the provided clustering and return a builder for that row.
@@ -716,24 +730,45 @@ public class PartitionUpdate extends AbstractBTreePartition
                 assert !iter.isReverseOrder();
 
                 update.metadata.id.serialize(out);
+                if (version >= MessagingService.VERSION_51)
+                    Epoch.serializer.serialize(update.metadata.epoch != null ? update.metadata.epoch : Epoch.EMPTY, out);
                 UnfilteredRowIteratorSerializer.serializer.serialize(iter, null, out, version, update.rowCount());
             }
         }
 
         public PartitionUpdate deserialize(DataInputPlus in, int version, DeserializationHelper.Flag flag) throws IOException
         {
-            TableMetadata metadata = Schema.instance.getExistingTableMetadata(TableId.deserialize(in));
-            UnfilteredRowIteratorSerializer.Header header = UnfilteredRowIteratorSerializer.serializer.deserializeHeader(metadata, null, in, version, flag);
+            TableId tableId = TableId.deserialize(in);
+            Epoch remoteVersion = null;
+            if (version >= MessagingService.VERSION_51)
+                remoteVersion = Epoch.serializer.deserialize(in);
+            TableMetadata tableMetadata;
+            try
+            {
+                tableMetadata = Schema.instance.getExistingTableMetadata(tableId);
+            }
+            catch (UnknownTableException e)
+            {
+                ClusterMetadata metadata = ClusterMetadata.current();
+                Epoch localCurrentEpoch = metadata.epoch;
+                if (remoteVersion != null && localCurrentEpoch.isAfter(remoteVersion))
+                {
+                    TCMMetrics.instance.coordinatorBehindSchema.mark();
+                    throw new CoordinatorBehindException(e.getMessage(), e);
+                }
+                throw e;
+            }
+            UnfilteredRowIteratorSerializer.Header header = UnfilteredRowIteratorSerializer.serializer.deserializeHeader(tableMetadata, null, in, version, flag);
             if (header.isEmpty)
-                return emptyUpdate(metadata, header.key);
+                return emptyUpdate(tableMetadata, header.key);
 
             assert !header.isReversed;
             assert header.rowEstimate >= 0;
 
-            MutableDeletionInfo.Builder deletionBuilder = MutableDeletionInfo.builder(header.partitionDeletion, metadata.comparator, false);
+            MutableDeletionInfo.Builder deletionBuilder = MutableDeletionInfo.builder(header.partitionDeletion, tableMetadata.comparator, false);
             Object[] rows;
             try (BTree.FastBuilder<Row> builder = BTree.fastBuilder();
-                 UnfilteredRowIterator partition = UnfilteredRowIteratorSerializer.serializer.deserialize(in, version, metadata, flag, header))
+                 UnfilteredRowIterator partition = UnfilteredRowIteratorSerializer.serializer.deserialize(in, version, tableMetadata, flag, header))
             {
                 while (partition.hasNext())
                 {
@@ -747,19 +782,27 @@ public class PartitionUpdate extends AbstractBTreePartition
             }
 
             MutableDeletionInfo deletionInfo = deletionBuilder.build();
-            return new PartitionUpdate(metadata,
+            return new PartitionUpdate(tableMetadata,
+                                       remoteVersion,
                                        header.key,
                                        new BTreePartitionData(header.sHeader.columns(), rows, deletionInfo, header.staticRow, header.sHeader.stats()),
                                        deletionInfo,
                                        false);
         }
 
-        public static boolean isEmpty(ByteBuffer in, DeserializationHelper.Flag flag, DecoratedKey key) throws IOException
+        public static boolean isEmpty(ByteBuffer in, DeserializationHelper.Flag flag, DecoratedKey key, int version) throws IOException
         {
             int position = in.position();
             position += 16; // CFMetaData.serializer.deserialize(in, version);
             if (position >= in.limit())
                 throw new EOFException();
+
+            if (version >= MessagingService.VERSION_51)
+            {
+                long epoch = VIntCoding.getUnsignedVInt(in, position);
+                position += VIntCoding.computeVIntSize(epoch);
+            }
+
             // DecoratedKey key = metadata.decorateKey(ByteBufferUtil.readWithVIntLength(in));
             int keyLength = VIntCoding.getUnsignedVInt32(in, position);
             position += keyLength + VIntCoding.computeUnsignedVIntSize(keyLength);
@@ -774,6 +817,7 @@ public class PartitionUpdate extends AbstractBTreePartition
             try (UnfilteredRowIterator iter = update.unfilteredIterator())
             {
                 return update.metadata.id.serializedSize()
+                     + (version >= MessagingService.VERSION_51 ? Epoch.serializer.serializedSize(update.metadata.epoch) : 0)
                      + UnfilteredRowIteratorSerializer.serializer.serializedSize(iter, null, version, update.rowCount());
             }
         }
@@ -967,6 +1011,7 @@ public class PartitionUpdate extends AbstractBTreePartition
 
             isBuilt = true;
             return new PartitionUpdate(metadata,
+                                       metadata.epoch,
                                        partitionKey(),
                                        new BTreePartitionData(columns,
                                                               merged,

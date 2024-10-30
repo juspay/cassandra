@@ -29,7 +29,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.awaitility.Awaitility;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -40,6 +39,7 @@ import org.junit.Test;
 import org.apache.cassandra.distributed.Cluster;
 import org.apache.cassandra.distributed.api.ConsistencyLevel;
 import org.apache.cassandra.utils.TimeUUID;
+import org.awaitility.Awaitility;
 
 public class SecondaryIndexTest extends TestBaseImpl
 {
@@ -88,7 +88,7 @@ public class SecondaryIndexTest extends TestBaseImpl
         cluster.forEach(i -> i.flush(KEYSPACE));
 
         Pattern indexScanningPattern =
-                Pattern.compile(String.format("Index mean cardinalities are v_index_%d:[0-9]+. Scanning with v_index_%d.", seq.get(), seq.get()));
+                Pattern.compile(String.format("Index mean cardinalities are v_index_%d:[-0-9]+. Scanning with v_index_%d.", seq.get(), seq.get()));
 
         for (int i = 0 ; i < 33; ++i)
         {

@@ -27,13 +27,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
 
+import org.apache.cassandra.ServerTestUtils;
 import org.apache.cassandra.db.commitlog.CommitLog;
 
 import org.junit.AfterClass;
 import org.junit.Test;
 
 import org.junit.Assert;
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.SetType;
 import org.apache.cassandra.db.marshal.UTF8Type;
@@ -50,7 +50,7 @@ public class ColumnsTest
 {
     static
     {
-        DatabaseDescriptor.daemonInitialization();
+        ServerTestUtils.prepareServerNoRegister();
         CommitLog.instance.start();
     }
 
@@ -496,7 +496,7 @@ public class ColumnsTest
 
     private static ColumnMetadata def(String name, AbstractType<?> type, ColumnMetadata.Kind kind)
     {
-        return new ColumnMetadata(TABLE_METADATA, bytes(name), type, ColumnMetadata.NO_POSITION, kind);
+        return new ColumnMetadata(TABLE_METADATA, bytes(name), type, ColumnMetadata.NO_POSITION, kind, null);
     }
 
     private static TableMetadata mock(Columns columns)

@@ -31,15 +31,16 @@ import com.datastax.driver.core.SimpleStatement;
 import com.datastax.driver.core.Statement;
 import org.apache.cassandra.ServerTestUtils;
 import org.apache.cassandra.config.DatabaseDescriptor;
-
-import org.apache.cassandra.dht.Murmur3Partitioner.LongToken;
-import org.apache.cassandra.locator.*;
+import org.apache.cassandra.locator.AbstractEndpointSnitch;
+import org.apache.cassandra.locator.IEndpointSnitch;
+import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaCollection;
 import org.apache.cassandra.service.EmbeddedCassandraService;
-import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.utils.FBUtilities;
 
-import static org.junit.Assert.assertFalse;
+import static org.apache.cassandra.config.CassandraRelevantProperties.CASSANDRA_CONFIG;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 
 public class PagingTest
@@ -57,7 +58,7 @@ public class PagingTest
     @BeforeClass
     public static void setup() throws Exception
     {
-        System.setProperty("cassandra.config", "cassandra-murmur.yaml");
+        CASSANDRA_CONFIG.setString("cassandra-murmur.yaml");
 
         cassandra = ServerTestUtils.startEmbeddedCassandraService();
 
@@ -127,8 +128,8 @@ public class PagingTest
             }
         };
         DatabaseDescriptor.setEndpointSnitch(snitch);
-        StorageService.instance.getTokenMetadata().clearUnsafe();
-        StorageService.instance.getTokenMetadata().updateNormalToken(new LongToken(5097162189738624638L), FBUtilities.getBroadcastAddressAndPort());
+//        StorageService.instance.getTokenMetadata().clearUnsafe();
+//        StorageService.instance.getTokenMetadata().updateNormalToken(new LongToken(5097162189738624638L), FBUtilities.getBroadcastAddressAndPort());
         session.execute(createTableStatement);
 
         for (int i = 0; i < 110; i++)

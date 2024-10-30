@@ -25,18 +25,25 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
-import org.apache.cassandra.cql3.Json;
-import org.apache.cassandra.cql3.Lists;
-import org.apache.cassandra.cql3.Term;
+import javax.annotation.Nullable;
+
+import org.apache.cassandra.cql3.terms.MultiElements;
+import org.apache.cassandra.cql3.terms.Term;
 import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.rows.ColumnData;
+import org.apache.cassandra.db.rows.ComplexColumnData;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.ListSerializer;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.JsonUtils;
 import org.apache.cassandra.utils.TimeUUID;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.bytecomparable.ByteComparable.Version;
 import org.apache.cassandra.utils.bytecomparable.ByteSource;
+
+import static org.apache.cassandra.cql3.statements.RequestValidations.checkFalse;
 
 public class ListType<T> extends CollectionType<List<T>>
 {
@@ -54,7 +61,7 @@ public class ListType<T> extends CollectionType<List<T>>
         if (l.size() != 1)
             throw new ConfigurationException("ListType takes exactly 1 type parameter");
 
-        return getInstance(l.get(0), true);
+        return getInstance(l.get(0).freeze(), true);
     }
 
     public static <T> ListType<T> getInstance(AbstractType<T> elements, boolean isMultiCell)
@@ -126,10 +133,14 @@ public class ListType<T> extends CollectionType<List<T>>
     @Override
     public AbstractType<?> freeze()
     {
-        if (isMultiCell)
-            return getInstance(this.elements, false);
-        else
-            return this;
+        // freeze elements to match org.apache.cassandra.cql3.CQL3Type.Raw.RawCollection.freeze
+        return isMultiCell ? getInstance(this.elements.freeze(), false) : this;
+    }
+
+    @Override
+    public AbstractType<?> unfreeze()
+    {
+        return isMultiCell ? this : getInstance(this.elements, true);
     }
 
     @Override
@@ -215,7 +226,7 @@ public class ListType<T> extends CollectionType<List<T>>
     public Term fromJSONObject(Object parsed) throws MarshalException
     {
         if (parsed instanceof String)
-            parsed = Json.decodeJson((String) parsed);
+            parsed = JsonUtils.decodeJson((String) parsed);
 
         if (!(parsed instanceof List))
             throw new MarshalException(String.format(
@@ -230,7 +241,7 @@ public class ListType<T> extends CollectionType<List<T>>
             terms.add(elements.fromJSONObject(element));
         }
 
-        return new Lists.DelayedValue(terms);
+        return new MultiElements.DelayedValue(this, terms);
     }
 
     public ByteBuffer getSliceFromSerialized(ByteBuffer collection, ByteBuffer from, ByteBuffer to)
@@ -255,5 +266,72 @@ public class ListType<T> extends CollectionType<List<T>>
     public ByteBuffer getMaskedValue()
     {
         return decompose(Collections.emptyList());
+    }
+
+    @Override
+    public List<ByteBuffer> filterSortAndValidateElements(List<ByteBuffer> buffers)
+    {
+        for (ByteBuffer buffer: buffers)
+        {
+            if (buffer == null)
+                throw new MarshalException("null is not supported inside collections");
+            elements.validate(buffer);
+        }
+        return buffers;
+    }
+
+    @Override
+    protected int compareNextCell(Iterator<Cell<?>> cellIterator, Iterator<ByteBuffer> elementIter)
+    {
+        return getElementsType().compare(cellIterator.next().buffer(), elementIter.next());
+    }
+
+    @Override
+    public boolean contains(ComplexColumnData columnData, ByteBuffer value)
+    {
+        Iterator<Cell<?>> iter = columnData.iterator();
+        while(iter.hasNext())
+        {
+            ByteBuffer cellValue = iter.next().buffer();
+            if(valueComparator().compare(cellValue, value) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    @Override
+    public AbstractType<?> elementType(ByteBuffer keyOrIndex)
+    {
+        return getElementsType();
+    }
+
+    @Override
+    public ByteBuffer getElement(@Nullable ColumnData columnData, ByteBuffer keyOrIndex)
+    {
+        if (columnData == null)
+            return null;
+
+        int idx = listIndex(keyOrIndex);
+
+        if (isMultiCell())
+        {
+            ComplexColumnData complexColumnData = (ComplexColumnData) columnData;
+
+            if (idx >= complexColumnData.cellsCount())
+                return null;
+
+            Cell<?> cell = complexColumnData.getCellByIndex(idx);
+            return cell == null ? null : cell.buffer();
+        }
+
+        List<ByteBuffer> cells = unpack(((Cell<?>) columnData).buffer());
+        return idx >= cells.size() ? null : cells.get(idx);
+    }
+
+    private int listIndex(ByteBuffer index)
+    {
+        int idx = ByteBufferUtil.toInt(index);
+        checkFalse(idx < 0, "Invalid negative list index %d", idx);
+        return idx;
     }
 }

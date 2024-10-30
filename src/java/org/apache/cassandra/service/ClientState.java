@@ -58,6 +58,7 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.MD5Digest;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.CUSTOM_QUERY_HANDLER_CLASS;
 import static org.apache.cassandra.utils.Clock.Global.currentTimeMillis;
 
 /**
@@ -96,18 +97,20 @@ public class ClientState
     private volatile AuthenticatedUser user;
     private volatile String keyspace;
     private volatile boolean issuedPreparedStatementsUseWarning;
+    private volatile boolean issuedWarningForUneligiblePreparedStatements;
 
     private static final QueryHandler cqlQueryHandler;
     static
     {
         QueryHandler handler = QueryProcessor.instance;
-        String customHandlerClass = System.getProperty("cassandra.custom_query_handler_class");
+        String customHandlerClass = CUSTOM_QUERY_HANDLER_CLASS.getString();
         if (customHandlerClass != null)
         {
             try
             {
                 handler = FBUtilities.construct(customHandlerClass, "QueryHandler");
-                logger.info("Using {} as query handler for native protocol queries (as requested with -Dcassandra.custom_query_handler_class)", customHandlerClass);
+                logger.info("Using {} as a query handler for native protocol queries (as requested by the {} system property)",
+                            customHandlerClass, CUSTOM_QUERY_HANDLER_CLASS.getKey());
             }
             catch (Exception e)
             {
@@ -137,6 +140,27 @@ public class ClientState
     // most new user will intuitively expect timestamp to be strictly monotonic cluster-wise, but while that last part
     // is unrealistic expectation, doing it node-wise is easy).
     private static final AtomicLong lastTimestampMicros = new AtomicLong(0);
+
+    private boolean applyGuardrails = true;
+    /**
+     * Provides an additional control on the checking of guardrails. When executing SchemaTransformations in the
+     * metadata log follower or when committing on a CMS member, we don't want guardrails to fire warnings.
+     * @see org.apache.cassandra.schema.SchemaTransformation#enterExecution()
+     **/
+    public void pauseGuardrails()
+    {
+        applyGuardrails = false;
+    }
+
+    public void resumeGuardrails()
+    {
+        applyGuardrails = true;
+    }
+
+    public boolean applyGuardrails()
+    {
+        return applyGuardrails;
+    }
 
     @VisibleForTesting
     public static void resetLastTimestamp(long nowMillis)
@@ -414,6 +438,27 @@ public class ClientState
         ensurePermission(table.keyspace, perm, table.resource);
     }
 
+    public boolean hasTablePermission(TableMetadata table, Permission perm)
+    {
+        if (isInternal)
+            return true;
+
+        validateLogin();
+
+        if (!DatabaseDescriptor.getAuthorizer().requireAuthorization())
+            return true;
+
+        List<? extends IResource> resources = Resources.chain(table.resource);
+        if (DatabaseDescriptor.getAuthFromRoot())
+            resources = Lists.reverse(resources);
+
+        for (IResource r : resources)
+            if (authorize(r).contains(perm))
+                return true;
+
+        return false;
+    }
+
     private void ensurePermission(String keyspace, Permission perm, DataResource resource)
     {
         validateKeyspace(keyspace);
@@ -511,6 +556,11 @@ public class ClientState
         {
             throw new UnauthorizedException(String.format("You do not have access to this datacenter (%s)", Datacenters.thisDatacenter()));
         }
+        else
+        {
+            if (remoteAddress != null && !user.hasAccessFromIp(remoteAddress))
+                throw new UnauthorizedException("You do not have access from this IP " + remoteAddress.getHostString());
+        }
     }
 
     public void ensureNotAnonymous()
@@ -563,6 +613,15 @@ public class ClientState
                                                    "always use fully qualified table names (e.g. <keyspace>.<table>). " +
                                                    "Keyspace used: %s, statement keyspace: %s, statement id: %s", getRawKeyspace(), preparedKeyspace, statementId));
             issuedPreparedStatementsUseWarning = true;
+        }
+    }
+
+    public void warnAboutUneligiblePreparedStatement(MD5Digest statementId)
+    {
+        if (!issuedWarningForUneligiblePreparedStatements)
+        {
+            ClientWarn.instance.warn(String.format("Prepared statements for other than modification and selection statements should be avoided, statement id: %s", statementId));
+            issuedWarningForUneligiblePreparedStatements = true;
         }
     }
 

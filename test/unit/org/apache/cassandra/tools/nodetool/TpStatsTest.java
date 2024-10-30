@@ -29,13 +29,13 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.NoPayload;
 import org.apache.cassandra.tools.ToolRunner;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.JsonUtils;
 import org.yaml.snakeyaml.Yaml;
 
 import static org.apache.cassandra.net.Verb.ECHO_REQ;
@@ -67,7 +67,7 @@ public class TpStatsTest extends CQLTester
                         "                [(-pp | --print-port)] [(-pw <password> | --password <password>)]\n" + 
                         "                [(-pwf <passwordFilePath> | --password-file <passwordFilePath>)]\n" + 
                         "                [(-u <username> | --username <username>)] tpstats\n" + 
-                        "                [(-F <format> | --format <format>)]\n" + 
+                        "                [(-F <format> | --format <format>)] [(-v | --verbose)]\n" +
                         "\n" + 
                         "OPTIONS\n" + 
                         "        -F <format>, --format <format>\n" + 
@@ -89,7 +89,10 @@ public class TpStatsTest extends CQLTester
                         "            Path to the JMX password file\n" + 
                         "\n" + 
                         "        -u <username>, --username <username>\n" + 
-                        "            Remote jmx agent username\n" +  
+                        "            Remote jmx agent username\n" +
+                        "\n" +
+                        "        -v, --verbose\n" +
+                        "            Display detailed metrics about thread pool's sizes\n" +
                         "\n" + 
                         "\n";
         assertThat(tool.getStdout()).isEqualTo(help);
@@ -163,8 +166,7 @@ public class TpStatsTest extends CQLTester
     {
         try
         {
-            ObjectMapper mapper = new ObjectMapper();
-            mapper.readTree(str);
+            JsonUtils.JSON_OBJECT_MAPPER.readTree(str);
             return true;
         }
         catch(IOException e)

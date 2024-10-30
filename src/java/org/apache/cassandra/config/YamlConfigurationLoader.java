@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -42,27 +41,32 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.util.File;
+import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.TypeDescription;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.composer.Composer;
-import org.yaml.snakeyaml.constructor.SafeConstructor;
 import org.yaml.snakeyaml.constructor.CustomClassLoaderConstructor;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 import org.yaml.snakeyaml.error.YAMLException;
 import org.yaml.snakeyaml.introspector.MissingProperty;
 import org.yaml.snakeyaml.introspector.Property;
 import org.yaml.snakeyaml.introspector.PropertyUtils;
 import org.yaml.snakeyaml.nodes.Node;
+import org.yaml.snakeyaml.nodes.Tag;
+import org.yaml.snakeyaml.parser.ParserImpl;
+import org.yaml.snakeyaml.representer.Representer;
+import org.yaml.snakeyaml.resolver.Resolver;
 
 import static org.apache.cassandra.config.CassandraRelevantProperties.ALLOW_DUPLICATE_CONFIG_KEYS;
 import static org.apache.cassandra.config.CassandraRelevantProperties.ALLOW_NEW_OLD_CONFIG_KEYS;
+import static org.apache.cassandra.config.CassandraRelevantProperties.CASSANDRA_CONFIG;
 import static org.apache.cassandra.config.Replacements.getNameReplacements;
 
 public class YamlConfigurationLoader implements ConfigurationLoader
 {
     private static final Logger logger = LoggerFactory.getLogger(YamlConfigurationLoader.class);
 
-    private final static String DEFAULT_CONFIGURATION = "cassandra.yaml";
     /**
      * This is related to {@link Config#PROPERTY_PREFIX} but is different to make sure Config properties updated via
      * system properties do not conflict with other system properties; the name "settings" matches system_views.settings.
@@ -74,9 +78,7 @@ public class YamlConfigurationLoader implements ConfigurationLoader
      */
     private static URL getStorageConfigURL() throws ConfigurationException
     {
-        String configUrl = System.getProperty("cassandra.config");
-        if (configUrl == null)
-            configUrl = DEFAULT_CONFIGURATION;
+        String configUrl = CASSANDRA_CONFIG.getString();
 
         URL url;
         try
@@ -198,11 +200,13 @@ public class YamlConfigurationLoader implements ConfigurationLoader
 
     private static void verifyReplacements(Map<Class<?>, Map<String, Replacement>> replacements, byte[] configBytes)
     {
-        LoaderOptions loaderOptions = new LoaderOptions();
+        LoaderOptions loaderOptions = getDefaultLoaderOptions();
         loaderOptions.setAllowDuplicateKeys(ALLOW_DUPLICATE_CONFIG_KEYS.getBoolean());
         Yaml rawYaml = new Yaml(loaderOptions);
 
         Map<String, Object> rawConfig = rawYaml.load(new ByteArrayInputStream(configBytes));
+        if (rawConfig == null)
+            rawConfig = new HashMap<>();
         verifyReplacements(replacements, rawConfig);
 
     }
@@ -223,14 +227,7 @@ public class YamlConfigurationLoader implements ConfigurationLoader
         constructor.setPropertyUtils(propertiesChecker);
         Yaml yaml = new Yaml(constructor);
         Node node = yaml.represent(map);
-        constructor.setComposer(new Composer(null, null)
-        {
-            @Override
-            public Node getSingleNode()
-            {
-                return node;
-            }
-        });
+        constructor.setComposer(getDefaultComposer(node));
         T value = (T) constructor.getSingleData(klass);
         if (shouldCheck)
             propertiesChecker.check();
@@ -257,18 +254,41 @@ public class YamlConfigurationLoader implements ConfigurationLoader
         constructor.setPropertyUtils(propertiesChecker);
         Yaml yaml = new Yaml(constructor);
         Node node = yaml.represent(map);
-        constructor.setComposer(new Composer(null, null)
+        constructor.setComposer(getDefaultComposer(node));
+        T value = (T) constructor.getSingleData(klass);
+        if (shouldCheck)
+            propertiesChecker.check();
+        return value;
+    }
+
+    public static String toYaml(Object map)
+    {
+        DumperOptions options = new DumperOptions();
+        options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
+        options.setExplicitStart(true);
+        class NoTags extends Representer
+        {
+            public NoTags() {
+                super(options);
+                this.multiRepresenters.put(Enum.class, data -> representScalar(Tag.STR, ((Enum<?>) data).name()));
+            }
+        }
+
+        Yaml yaml = new Yaml(new NoTags(), options);
+
+        return yaml.dump(map);
+    }
+
+    private static Composer getDefaultComposer(Node node)
+    {
+        return new Composer(new ParserImpl(null), new Resolver(), getDefaultLoaderOptions())
         {
             @Override
             public Node getSingleNode()
             {
                 return node;
             }
-        });
-        T value = (T) constructor.getSingleData(klass);
-        if (shouldCheck)
-            propertiesChecker.check();
-        return value;
+        };
     }
 
     @VisibleForTesting
@@ -276,7 +296,7 @@ public class YamlConfigurationLoader implements ConfigurationLoader
     {
         CustomConstructor(Class<?> theRoot, ClassLoader classLoader)
         {
-            super(theRoot, classLoader);
+            super(theRoot, classLoader, getDefaultLoaderOptions());
 
             TypeDescription seedDesc = new TypeDescription(ParameterizedClass.class);
             seedDesc.putMapPropertyType("parameters", String.class, String.class);
@@ -426,6 +446,13 @@ public class YamlConfigurationLoader implements ConfigurationLoader
             if (!deprecationWarnings.isEmpty())
                 logger.warn("{} parameters have been deprecated. They have new names and/or value format; For more information, please refer to NEWS.txt", deprecationWarnings);
         }
+    }
+
+    public static LoaderOptions getDefaultLoaderOptions()
+    {
+        LoaderOptions loaderOptions = new LoaderOptions();
+        loaderOptions.setCodePointLimit(64 * 1024 * 1024); // 64 MiB
+        return loaderOptions;
     }
 }
 

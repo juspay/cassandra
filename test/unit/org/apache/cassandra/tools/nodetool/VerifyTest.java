@@ -36,12 +36,12 @@ public class VerifyTest extends CQLTester
     @BeforeClass
     public static void setup() throws Exception
     {
-        SchemaLoader.prepareServer();
         AuthTestUtils.LocalCassandraRoleManager roleManager = new AuthTestUtils.LocalCassandraRoleManager();
         SchemaLoader.setupAuth(roleManager,
                                new AuthTestUtils.LocalPasswordAuthenticator(),
                                new AuthTestUtils.LocalCassandraAuthorizer(),
-                               new AuthTestUtils.LocalCassandraNetworkAuthorizer());
+                               new AuthTestUtils.LocalCassandraNetworkAuthorizer(),
+                               new AuthTestUtils.LocalCassandraCIDRAuthorizer());
 
         roleManager.createRole(AuthenticatedUser.SYSTEM_USER, ROLE_A, AuthTestUtils.getLoginRoleOptions());
         roleManager.createRole(AuthenticatedUser.SYSTEM_USER, ROLE_B, AuthTestUtils.getLoginRoleOptions());

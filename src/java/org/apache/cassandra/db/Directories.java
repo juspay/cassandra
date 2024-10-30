@@ -17,52 +17,69 @@
  */
 package org.apache.cassandra.db;
 
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.function.BiPredicate;
-import java.util.function.Function;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
-
-import com.google.common.annotations.VisibleForTesting;
-
 import java.io.IOError;
 import java.io.IOException;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.Spliterator;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.BiPredicate;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.util.concurrent.RateLimiter;
-
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.*;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.io.FSDiskFullWriteError;
 import org.apache.cassandra.io.FSError;
 import org.apache.cassandra.io.FSNoDiskAvailableForWriteError;
 import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.io.sstable.Component;
+import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.SSTable;
+import org.apache.cassandra.io.sstable.SSTableId;
+import org.apache.cassandra.io.sstable.SSTableIdFactory;
 import org.apache.cassandra.io.util.File;
 import org.apache.cassandra.io.util.FileStoreUtils;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.io.sstable.*;
-import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.io.util.PathUtils;
+import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.snapshot.SnapshotManifest;
 import org.apache.cassandra.service.snapshot.TableSnapshot;
 import org.apache.cassandra.utils.DirectorySizeCalculator;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.Pair;
+
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
 
 /**
  * Encapsulate handling of paths to the data files.
@@ -275,7 +292,7 @@ public class Directories
                     if (file.isDirectory())
                         return false;
 
-                    Descriptor desc = SSTable.tryDescriptorFromFilename(file);
+                    Descriptor desc = SSTable.tryDescriptorFromFile(file);
                     return desc != null && desc.ksname.equals(metadata.keyspace) && desc.cfname.equals(metadata.name);
                 });
                 for (File indexFile : indexFiles)
@@ -322,7 +339,7 @@ public class Directories
         {
             File file = new File(dir, filename);
             if (file.exists())
-                return Descriptor.fromFilename(file);
+                return Descriptor.fromFileWithComponent(file, false).left;
         }
         return null;
     }
@@ -439,7 +456,8 @@ public class Directories
             // exclude directory if its total writeSize does not fit to data directory
             if (candidate.availableSpace < writeSize)
             {
-                logger.trace("removing candidate {}, usable={}, requested={}", candidate.dataDirectory.location, candidate.availableSpace, writeSize);
+                if (logger.isTraceEnabled())
+                    logger.trace("removing candidate {}, usable={}, requested={}", candidate.dataDirectory.location, candidate.availableSpace, writeSize);
                 tooBig = true;
                 continue;
             }
@@ -501,8 +519,8 @@ public class Directories
      *                                      CASSANDRA-6696 we expect compactions to read and written from the same dir)
      * @return true if we expect to be able to write expectedNewWriteSizes to the available file stores
      */
-    public static boolean hasDiskSpaceForCompactionsAndStreams(Map<File, Long> expectedNewWriteSizes,
-                                                               Map<File, Long> totalCompactionWriteRemaining)
+    public boolean hasDiskSpaceForCompactionsAndStreams(Map<File, Long> expectedNewWriteSizes,
+                                                        Map<File, Long> totalCompactionWriteRemaining)
     {
         return hasDiskSpaceForCompactionsAndStreams(expectedNewWriteSizes, totalCompactionWriteRemaining, Directories::getFileStore);
     }
@@ -530,14 +548,21 @@ public class Directories
      */
     public static boolean hasDiskSpaceForCompactionsAndStreams(Map<FileStore, Long> totalToWrite)
     {
+        boolean hasSpace = true;
         for (Map.Entry<FileStore, Long> toWrite : totalToWrite.entrySet())
         {
             long availableForCompaction = getAvailableSpaceForCompactions(toWrite.getKey());
             logger.debug("FileStore {} has {} bytes available, checking if we can write {} bytes", toWrite.getKey(), availableForCompaction, toWrite.getValue());
             if (availableForCompaction < toWrite.getValue())
-                return false;
+            {
+                logger.warn("FileStore {} has only {} available, but {} is needed",
+                            toWrite.getKey(),
+                            FileUtils.stringifyFileSize(availableForCompaction),
+                            FileUtils.stringifyFileSize((long) toWrite.getValue()));
+                hasSpace = false;
+            }
         }
-        return true;
+        return hasSpace;
     }
 
     public static long getAvailableSpaceForCompactions(FileStore fileStore)
@@ -625,6 +650,29 @@ public class Directories
         }
     }
 
+    /**
+     * Returns directory to write a snapshot to. If directory does not exist, then it is NOT created.
+     *
+     * If given {@code location} indicates secondary index, this will return
+     * {@code <cf dir>/snapshots/<snapshot name>/.<index name>}.
+     * Otherwise, this will return {@code <cf dir>/snapshots/<snapshot name>}.
+     *
+     * @param location base directory
+     * @param snapshotName snapshot name
+     * @return directory to write a snapshot
+     */
+    public static Optional<File> getSnapshotDirectoryIfExists(File location, String snapshotName)
+    {
+        if (isSecondaryIndexFolder(location))
+        {
+            return get(location.parent(), SNAPSHOT_SUBDIR, snapshotName, location.name());
+        }
+        else
+        {
+            return get(location, SNAPSHOT_SUBDIR, snapshotName);
+        }
+    }
+
     public File getSnapshotManifestFile(String snapshotName)
     {
         File snapshotDir = getSnapshotDirectory(getDirectoryForNewSSTables(), snapshotName);
@@ -652,6 +700,16 @@ public class Directories
         return getBackupsDirectory(desc.directory);
     }
 
+    /**
+     * Returns directory to write a backup to. If directory does not exist, then one is created.
+     *
+     * If given {@code location} indicates secondary index, this will return
+     * {@code <cf dir>/backups/.<index name>}.
+     * Otherwise, this will return {@code <cf dir>/backups/}.
+     *
+     * @param location base directory
+     * @return directory to write a backup
+     */
     public static File getBackupsDirectory(File location)
     {
         if (isSecondaryIndexFolder(location))
@@ -661,6 +719,28 @@ public class Directories
         else
         {
             return getOrCreate(location, BACKUPS_SUBDIR);
+        }
+    }
+
+    /**
+     * Returns directory to write a backup to. If directory does not exist, then it is NOT created.
+     *
+     * If given {@code location} indicates secondary index, this will return
+     * {@code <cf dir>/backups/.<index name>}.
+     * Otherwise, this will return {@code <cf dir>/backups/}.
+     *
+     * @param location base directory
+     * @return directory to write a backup
+     */
+    public static Optional<File> getBackupsDirectoryIfExists(File location)
+    {
+        if (isSecondaryIndexFolder(location))
+        {
+            return get(location.parent(), BACKUPS_SUBDIR, location.name());
+        }
+        else
+        {
+            return get(location, BACKUPS_SUBDIR);
         }
     }
 
@@ -677,11 +757,11 @@ public class Directories
      */
     public static boolean isStoredInLocalSystemKeyspacesDataLocation(String keyspace, String table)
     {
-        String keyspaceName = keyspace.toLowerCase();
+        String keyspaceName = toLowerCaseLocalized(keyspace);
 
         return SchemaConstants.LOCAL_SYSTEM_KEYSPACE_NAMES.contains(keyspaceName)
                 && !(SchemaConstants.SYSTEM_KEYSPACE_NAME.equals(keyspaceName)
-                        && SystemKeyspace.TABLES_SPLIT_ACROSS_MULTIPLE_DISKS.contains(table.toLowerCase()));
+                        && SystemKeyspace.TABLES_SPLIT_ACROSS_MULTIPLE_DISKS.contains(toLowerCaseLocalized(table)));
     }
 
     public static class DataDirectory
@@ -957,25 +1037,56 @@ public class Directories
 
         public Map<Descriptor, Set<Component>> list()
         {
-            filter();
+            return list(false);
+        }
+
+        /**
+         * This method is used upon SSTable importing (nodetool import) as there is no strict requirement to
+         * place SSTables in a directory structure where name of a directory equals to table name
+         * and parent of such directory equals to keyspace name. For such cases, we want to include such SSTables too,
+         * rendering the parameter to be set to true.
+         *
+         * @param includeForeignTables whether descriptors not matching metadata of this lister should be included
+         * @return found descriptors and related set of components
+         */
+        public Map<Descriptor, Set<Component>> list(boolean includeForeignTables)
+        {
+            filter(includeForeignTables);
             return ImmutableMap.copyOf(components);
+        }
+
+        /**
+         * Returns a sorted version of the {@code list} method.
+         * Descriptors are sorted by generation.
+         * @return a List of descriptors to their components.
+         */
+        public List<Map.Entry<Descriptor, Set<Component>>> sortedList()
+        {
+            List<Map.Entry<Descriptor, Set<Component>>> sortedEntries = new ArrayList<>(list().entrySet());
+            sortedEntries.sort((o1, o2) -> SSTableIdFactory.COMPARATOR.compare(o1.getKey().id, o2.getKey().id));
+            return sortedEntries;
         }
 
         public List<File> listFiles()
         {
-            filter();
+            return listFiles(false);
+        }
+
+        public List<File> listFiles(boolean includeForeignTables)
+        {
+            filter(includeForeignTables);
             List<File> l = new ArrayList<>(nbFiles);
             for (Map.Entry<Descriptor, Set<Component>> entry : components.entrySet())
             {
                 for (Component c : entry.getValue())
                 {
-                    l.add(new File(entry.getKey().filenameFor(c)));
+                    l.add(entry.getKey().fileFor(c));
                 }
             }
             return l;
         }
 
-        private void filter()
+        private void filter(boolean includeForeignTables)
         {
             if (filtered)
                 return;
@@ -987,21 +1098,25 @@ public class Directories
 
                 if (snapshotName != null)
                 {
-                    LifecycleTransaction.getFiles(getSnapshotDirectory(location, snapshotName).toPath(), getFilter(), onTxnErr);
+                    Optional<File> maybeSnapshotDir = getSnapshotDirectoryIfExists(location, snapshotName);
+                    maybeSnapshotDir.ifPresent(dir -> LifecycleTransaction.getFiles(dir.toPath(), getFilter(includeForeignTables), onTxnErr));
                     continue;
                 }
 
                 if (!onlyBackups)
-                    LifecycleTransaction.getFiles(location.toPath(), getFilter(), onTxnErr);
+                    LifecycleTransaction.getFiles(location.toPath(), getFilter(includeForeignTables), onTxnErr);
 
                 if (includeBackups)
-                    LifecycleTransaction.getFiles(getBackupsDirectory(location).toPath(), getFilter(), onTxnErr);
+                {
+                    Optional<File> maybeBackupsDir = getBackupsDirectoryIfExists(location);
+                    maybeBackupsDir.ifPresent(dir -> LifecycleTransaction.getFiles(dir.toPath(), getFilter(includeForeignTables), onTxnErr));
+                }
             }
 
             filtered = true;
         }
 
-        private BiPredicate<File, FileType> getFilter()
+        private BiPredicate<File, FileType> getFilter(boolean includeForeignTables)
         {
             // This function always return false since it adds to the components map
             return (file, type) ->
@@ -1019,15 +1134,31 @@ public class Directories
                         if (pair == null)
                             return false;
 
+                        Descriptor descriptor = null;
+
                         // we are only interested in the SSTable files that belong to the specific ColumnFamily
                         if (!pair.left.ksname.equals(metadata.keyspace) || !pair.left.cfname.equals(metadata.name))
-                            return false;
+                        {
+                            if (!includeForeignTables)
+                                return false;
 
-                        Set<Component> previous = components.get(pair.left);
+                            descriptor = new Descriptor(pair.left.version.toString(),
+                                                        pair.left.directory,
+                                                        metadata.keyspace,
+                                                        metadata.name,
+                                                        pair.left.id,
+                                                        pair.left.getFormat());
+                        }
+                        else
+                        {
+                            descriptor = pair.left;
+                        }
+
+                        Set<Component> previous = components.get(descriptor);
                         if (previous == null)
                         {
                             previous = new HashSet<>();
-                            components.put(pair.left, previous);
+                            components.put(descriptor, previous);
                         }
                         previous.add(pair.right);
                         nbFiles++;
@@ -1164,9 +1295,11 @@ public class Directories
             {
                 FileUtils.deleteRecursiveWithThrottle(snapshotDir, snapshotRateLimiter);
             }
-            catch (FSWriteError e)
+            catch (RuntimeException ex)
             {
-                throw e;
+                if (!snapshotDir.exists())
+                    return; // ignore
+                throw ex;
             }
         }
     }
@@ -1291,6 +1424,12 @@ public class Directories
         return dir;
     }
 
+    public static Optional<File> get(File base, String... subdirs)
+    {
+        File dir = subdirs == null || subdirs.length == 0 ? base : new File(base, join(subdirs));
+        return dir.exists() ? Optional.of(dir) : Optional.empty();
+    }
+
     private static String join(String... s)
     {
         return StringUtils.join(s, File.pathSeparator());
@@ -1308,7 +1447,7 @@ public class Directories
         public boolean isAcceptable(Path path)
         {
             File file = new File(path);
-            Descriptor desc = SSTable.tryDescriptorFromFilename(file);
+            Descriptor desc = SSTable.tryDescriptorFromFile(file);
             return desc != null
                 && desc.ksname.equals(metadata.keyspace)
                 && desc.cfname.equals(metadata.name)

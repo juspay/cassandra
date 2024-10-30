@@ -35,10 +35,13 @@ import java.util.zip.GZIPInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.Util;
 import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.io.util.File;
 import org.apache.cassandra.simulator.ClusterSimulation;
 import org.apache.cassandra.simulator.RandomSource;
+import org.apache.cassandra.simulator.Simulation;
 import org.apache.cassandra.simulator.SimulationRunner.RecordOption;
 import org.apache.cassandra.simulator.systems.InterceptedWait.CaptureSites.Capture;
 import org.apache.cassandra.simulator.systems.SimulatedTime;
@@ -433,8 +436,8 @@ public class Reconcile
         File timeFile = new File(new File(loadFromDir), Long.toHexString(seed) + ".time.gz");
 
         try (BufferedReader eventIn = new BufferedReader(new InputStreamReader(new GZIPInputStream(eventFile.newInputStream())));
-             DataInputPlus.DataInputStreamPlus rngIn = new DataInputPlus.DataInputStreamPlus(rngFile.exists() && withRng != NONE ? new GZIPInputStream(rngFile.newInputStream()) : new ByteArrayInputStream(new byte[0]));
-             DataInputPlus.DataInputStreamPlus timeIn = new DataInputPlus.DataInputStreamPlus(timeFile.exists() && withTime != NONE ? new GZIPInputStream(timeFile.newInputStream()) : new ByteArrayInputStream(new byte[0])))
+             DataInputStreamPlus rngIn = Util.DataInputStreamPlusImpl.wrap(rngFile.exists() && withRng != NONE ? new GZIPInputStream(rngFile.newInputStream()) : new ByteArrayInputStream(new byte[0]));
+             DataInputStreamPlus timeIn = Util.DataInputStreamPlusImpl.wrap(timeFile.exists() && withTime != NONE ? new GZIPInputStream(timeFile.newInputStream()) : new ByteArrayInputStream(new byte[0])))
         {
             boolean inputHasWaitSites, inputHasWakeSites, inputHasRngCallSites, inputHasTimeCallSites;
             {
@@ -489,7 +492,8 @@ public class Reconcile
 
             class Line { int line = 1; } Line line = new Line(); // box for heap dump analysis
             try (ClusterSimulation<?> cluster = builder.create(seed);
-                 CloseableIterator<?> iter = cluster.simulation.iterator())
+                 Simulation simulation = cluster.simulation();
+                 CloseableIterator<?> iter = simulation.iterator())
             {
                 try
                 {

@@ -85,7 +85,7 @@ public class CommitLogSegmentManagerCDC extends AbstractCommitLogSegmentManager
 
     /**
      * Delete the oldest hard-linked CDC commit log segment to free up space.
-     * @param bytesToFree, the minimum space to free up
+     * @param bytesToFree the minimum space to free up
      * @return total size under the CDC folder in bytes after deletion
      */
     public long deleteOldLinkedCDCCommitLogSegment(long bytesToFree)
@@ -236,7 +236,8 @@ public class CommitLogSegmentManagerCDC extends AbstractCommitLogSegmentManager
     @Override
     public CommitLogSegment createSegment()
     {
-        CommitLogSegment segment = CommitLogSegment.createSegment(commitLog, this);
+        CommitLogSegment segment = super.createSegment();
+        segment.writeLogHeader();
         cdcSizeTracker.processNewSegment(segment);
         // After processing, the state of the segment can either be PERMITTED or FORBIDDEN
         if (segment.getCDCState() == CDCState.PERMITTED)

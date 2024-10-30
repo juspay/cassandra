@@ -3,12 +3,13 @@
 # Consider the effects on 'o.a.c.i.s.LegacySSTableTest' before changing schemas in this file.
 #
 cluster_name: Test Cluster
-# memtable_allocation_type: heap_buffers
-memtable_allocation_type: offheap_objects
-commitlog_sync: batch
-commitlog_sync_batch_window_in_ms: 1.0
+memtable_allocation_type: heap_buffers
+# memtable_allocation_type: offheap_objects
+commitlog_sync: periodic
+commitlog_sync_period: 10s
 commitlog_segment_size: 5MiB
 commitlog_directory: build/test/cassandra/commitlog
+commitlog_disk_access_mode: legacy
 # commitlog_compression:
 # - class_name: LZ4Compressor
 cdc_raw_directory: build/test/cassandra/cdc_raw
@@ -24,7 +25,7 @@ column_index_size: 4KiB
 saved_caches_directory: build/test/cassandra/saved_caches
 data_file_directories:
     - build/test/cassandra/data
-disk_access_mode: mmap
+disk_access_mode: mmap_index_only
 seed_provider:
   - class_name: org.apache.cassandra.locator.HttpSeedProvider
     parameters:
@@ -43,7 +44,7 @@ compaction_throughput: 0MiB/s
 row_cache_class_name: org.apache.cassandra.cache.OHCProvider
 row_cache_size: 16MiB
 user_defined_functions_enabled: true
-scripted_user_defined_functions_enabled: true
+scripted_user_defined_functions_enabled: false
 prepared_statements_cache_size: 1MiB
 corrupted_tombstone_strategy: exception
 stream_entire_sstables: true
@@ -52,10 +53,12 @@ sasi_indexes_enabled: true
 materialized_views_enabled: true
 drop_compact_storage_enabled: true
 file_cache_enabled: true
+full_query_logging_options:
+  allow_nodetool_archive_command: true
 auto_hints_cleanup_enabled: true
 
 heap_dump_path: build/test
-dump_heap_on_uncaught_exception: true
+dump_heap_on_uncaught_exception: false
 
 read_thresholds_enabled: true
 coordinator_read_size_warn_threshold: 1024KiB

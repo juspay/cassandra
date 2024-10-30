@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.memtable.Memtable;
+import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.util.File;
@@ -45,10 +46,14 @@ import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.service.paxos.cleanup.PaxosTableRepairs;
+import org.apache.cassandra.service.paxos.cleanup.PaxosRepairState;
 import org.apache.cassandra.utils.CloseableIterator;
 
+import static org.apache.cassandra.config.CassandraRelevantProperties.AUTO_REPAIR_FREQUENCY_SECONDS;
+import static org.apache.cassandra.config.CassandraRelevantProperties.DISABLE_PAXOS_AUTO_REPAIRS;
+import static org.apache.cassandra.config.CassandraRelevantProperties.DISABLE_PAXOS_STATE_FLUSH;
 import static org.apache.cassandra.config.DatabaseDescriptor.paxosRepairEnabled;
 import static org.apache.cassandra.service.paxos.uncommitted.PaxosKeyState.mergeUncommitted;
 
@@ -69,8 +74,8 @@ public class PaxosUncommittedTracker
 
     private static volatile UpdateSupplier updateSupplier;
 
-    private volatile boolean autoRepairsEnabled = !Boolean.getBoolean("cassandra.disable_paxos_auto_repairs");
-    private volatile boolean stateFlushEnabled = !Boolean.getBoolean("cassandra.disable_paxos_state_flush");
+    private volatile boolean autoRepairsEnabled = !DISABLE_PAXOS_AUTO_REPAIRS.getBoolean();
+    private volatile boolean stateFlushEnabled = !DISABLE_PAXOS_STATE_FLUSH.getBoolean();
 
     private boolean started = false;
     private boolean autoRepairStarted = false;
@@ -186,10 +191,14 @@ public class PaxosUncommittedTracker
         return tableStates.get(tableId);
     }
 
-    @SuppressWarnings("resource")
     public CloseableIterator<UncommittedPaxosKey> uncommittedKeyIterator(TableId tableId, Collection<Range<Token>> ranges)
     {
-        ranges = (ranges == null || ranges.isEmpty()) ? Collections.singleton(FULL_RANGE) : Range.normalize(ranges);
+        TableMetadata table = Schema.instance.getTableMetadata(tableId);
+        if (table == null || table.partitioner != IPartitioner.global())
+            ranges = Collections.singleton(FULL_RANGE);
+        else
+            ranges = (ranges == null || ranges.isEmpty()) ? Collections.singleton(FULL_RANGE) : Range.normalize(ranges);
+
         CloseableIterator<PaxosKeyState> updates = updateSupplier.repairIterator(tableId, ranges);
 
         try
@@ -320,14 +329,14 @@ public class PaxosUncommittedTracker
     {
         runAndLogException("file consolidation", this::consolidateFiles);
         runAndLogException("schedule auto repairs", this::schedulePaxosAutoRepairs);
-        runAndLogException("evict hung repairs", PaxosTableRepairs::evictHungRepairs);
+        runAndLogException("evict hung repairs", PaxosRepairState.instance()::evictHungRepairs);
     }
 
     public synchronized void startAutoRepairs()
     {
         if (autoRepairStarted)
             return;
-        int seconds = Integer.getInteger("cassandra.auto_repair_frequency_seconds", (int) TimeUnit.MINUTES.toSeconds(5));
+        int seconds = AUTO_REPAIR_FREQUENCY_SECONDS.getInt();
         ScheduledExecutors.scheduledTasks.scheduleAtFixedRate(this::maintenance, seconds, seconds, TimeUnit.SECONDS);
         autoRepairStarted = true;
     }

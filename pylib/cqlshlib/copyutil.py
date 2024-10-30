@@ -46,7 +46,7 @@ from queue import Queue
 
 from cassandra import OperationTimedOut
 from cassandra.cluster import Cluster, DefaultConnection
-from cassandra.cqltypes import ReversedType, UserType, VarcharType
+from cassandra.cqltypes import ReversedType, UserType, VarcharType, VectorType
 from cassandra.metadata import protect_name, protect_names, protect_value
 from cassandra.policies import RetryPolicy, WhiteListRoundRobinPolicy, DCAwareRoundRobinPolicy, FallthroughRetryPolicy
 from cassandra.query import BatchStatement, BatchType, SimpleStatement, tuple_factory
@@ -84,6 +84,11 @@ def printmsg(msg, eol='\n'):
     sys.stdout.write(msg)
     sys.stdout.write(eol)
     sys.stdout.flush()
+
+
+# Keep arguments in sync with printmsg
+def swallowmsg(msg, eol='\n'):
+    None
 
 
 class OneWayPipe(object):
@@ -139,7 +144,7 @@ class SendingChannel(object):
                     printmsg('%s: %s' % (e.__class__.__name__, e.message if hasattr(e, 'message') else str(e)))
 
         feeding_thread = threading.Thread(target=feed)
-        feeding_thread.setDaemon(True)
+        feeding_thread.daemon = True
         feeding_thread.start()
 
     def send(self, obj):
@@ -249,7 +254,7 @@ class CopyTask(object):
             DEBUG = True
 
         # do not display messages when exporting to STDOUT unless --debug is set
-        self.printmsg = printmsg if self.fname is not None or direction == 'from' or DEBUG else None
+        self.printmsg = printmsg if self.fname is not None or direction == 'from' or DEBUG else swallowmsg
         self.options = self.parse_options(opts, direction)
 
         self.num_processes = self.options.copy['numprocesses']
@@ -2069,6 +2074,12 @@ class ImportConversion(object):
             return ImmutableDict(frozenset((convert_mandatory(ct.subtypes[0], v[0]), convert(ct.subtypes[1], v[1]))
                                  for v in [split(split_format_str % vv, sep=sep) for vv in split(val)]))
 
+        def convert_vector(val, ct=cql_type):
+            string_coordinates = split(val)
+            if len(string_coordinates) != ct.vector_size:
+                raise ParseError("The length of given vector value '%d' is not equal to the vector size from the type definition '%d'" % (len(string_coordinates), ct.vector_size))
+            return [convert_mandatory(ct.subtype, v) for v in string_coordinates]
+
         def convert_user_type(val, ct=cql_type):
             """
             A user type is a dictionary except that we must convert each key into
@@ -2125,6 +2136,7 @@ class ImportConversion(object):
             'map': convert_map,
             'tuple': convert_tuple,
             'frozen': convert_single_subtype,
+            VectorType.typename: convert_vector,
         }
 
         return converters.get(cql_type.typename, convert_unknown)

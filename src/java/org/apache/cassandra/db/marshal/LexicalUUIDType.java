@@ -20,8 +20,9 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 import java.util.UUID;
 
-import org.apache.cassandra.cql3.Constants;
-import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.terms.Term;
+import org.apache.cassandra.cql3.functions.ArgumentDeserializer;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.UUIDSerializer;
@@ -32,7 +33,12 @@ import org.apache.cassandra.utils.bytecomparable.ByteSourceInverse;
 
 public class LexicalUUIDType extends AbstractType<UUID>
 {
+    public static class Serializer extends UUIDSerializer {}
+    private static final Serializer SERIALIZER = new Serializer();
+
     public static final LexicalUUIDType instance = new LexicalUUIDType();
+
+    private static final ArgumentDeserializer ARGUMENT_DESERIALIZER = new DefaultArgumentDeserializer(instance);
 
     private static final ByteBuffer MASKED_VALUE = instance.decompose(UUID.fromString("00000000-0000-0000-0000-000000000000"));
 
@@ -41,6 +47,13 @@ public class LexicalUUIDType extends AbstractType<UUID>
         super(ComparisonType.CUSTOM);
     } // singleton
 
+    @Override
+    public boolean allowsEmpty()
+    {
+        return true;
+    }
+
+    @Override
     public boolean isEmptyValueMeaningless()
     {
         return true;
@@ -123,9 +136,16 @@ public class LexicalUUIDType extends AbstractType<UUID>
         }
     }
 
+    @Override
     public TypeSerializer<UUID> getSerializer()
     {
-        return UUIDSerializer.instance;
+        return SERIALIZER;
+    }
+
+    @Override
+    public ArgumentDeserializer getArgumentDeserializer()
+    {
+        return ARGUMENT_DESERIALIZER;
     }
 
     @Override

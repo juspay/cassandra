@@ -20,6 +20,7 @@ package org.apache.cassandra.auth;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -43,12 +44,12 @@ import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
+import org.apache.cassandra.transport.Dispatcher;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.mindrot.jbcrypt.BCrypt;
 
 import static org.apache.cassandra.auth.CassandraRoleManager.consistencyForRoleRead;
-import static org.apache.cassandra.utils.Clock.Global.nanoTime;
 
 /**
  * PasswordAuthenticator is an IAuthenticator implementation
@@ -72,6 +73,7 @@ public class PasswordAuthenticator implements IAuthenticator, AuthCache.BulkLoad
     // really this is a rolename now, but as it only matters for Thrift, we leave it for backwards compatibility
     public static final String USERNAME_KEY = "username";
     public static final String PASSWORD_KEY = "password";
+    private static final Set<AuthenticationMode> AUTHENTICATION_MODES = Collections.singleton(AuthenticationMode.PASSWORD);
 
     static final byte NUL = 0;
     private SelectStatement authenticateStatement;
@@ -164,7 +166,7 @@ public class PasswordAuthenticator implements IAuthenticator, AuthCache.BulkLoad
         if (!checkpw(password, hash))
             throw new AuthenticationException(String.format("Provided username %s and/or password are incorrect", username));
 
-        return new AuthenticatedUser(username);
+        return new AuthenticatedUser(username, AuthenticationMode.PASSWORD);
     }
 
     private String queryHashedPassword(String username)
@@ -198,7 +200,7 @@ public class PasswordAuthenticator implements IAuthenticator, AuthCache.BulkLoad
     @VisibleForTesting
     ResultMessage.Rows select(SelectStatement statement, QueryOptions options)
     {
-        return statement.execute(QueryState.forInternalCalls(), options, nanoTime());
+        return statement.execute(QueryState.forInternalCalls(), options, Dispatcher.RequestTime.forImmediateExecution());
     }
 
     public Set<DataResource> protectedResources()
@@ -238,12 +240,19 @@ public class PasswordAuthenticator implements IAuthenticator, AuthCache.BulkLoad
         return new PlainTextSaslAuthenticator();
     }
 
+    @Override
+    public Set<AuthenticationMode> getSupportedAuthenticationModes()
+    {
+        return AUTHENTICATION_MODES;
+    }
+
     private static SelectStatement prepare(String query)
     {
         return (SelectStatement) QueryProcessor.getStatement(query, ClientState.forInternalCalls());
     }
 
-    private class PlainTextSaslAuthenticator implements SaslNegotiator
+    @VisibleForTesting
+    class PlainTextSaslAuthenticator implements SaslNegotiator
     {
         private boolean complete = false;
         private String username;
@@ -268,10 +277,16 @@ public class PasswordAuthenticator implements IAuthenticator, AuthCache.BulkLoad
             return authenticate(username, password);
         }
 
+        @Override
+        public AuthenticationMode getAuthenticationMode()
+        {
+            return AuthenticationMode.PASSWORD;
+        }
+
         /**
          * SASL PLAIN mechanism specifies that credentials are encoded in a
          * sequence of UTF-8 bytes, delimited by 0 (US-ASCII NUL).
-         * The form is : {code}authzId<NUL>authnId<NUL>password<NUL>{code}
+         * The form is : {@code authzId<NUL>authnId<NUL>password<NUL>}
          * authzId is optional, and in fact we don't care about it here as we'll
          * set the authzId to match the authnId (that is, there is no concept of
          * a user being authorized to act on behalf of another with this IAuthenticator).

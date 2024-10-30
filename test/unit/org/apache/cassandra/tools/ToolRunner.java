@@ -56,8 +56,8 @@ public class ToolRunner
 {
     protected static final Logger logger = LoggerFactory.getLogger(ToolRunner.class);
 
-    private static final ImmutableList<String> DEFAULT_CLEANERS = ImmutableList.of("(?im)^picked up.*\\R",
-                                                                                   "(?im)^.*`USE <keyspace>` with prepared statements is.*\\R");
+    public static final ImmutableList<String> DEFAULT_CLEANERS = ImmutableList.of("(?im)^picked up.*\\R",
+                                                                                  "(?im)^.*`USE <keyspace>` with prepared statements is.*\\R");
 
     public static int runClassAsTool(String clazz, String... args)
     {
@@ -196,6 +196,11 @@ public class ToolRunner
         return invoke(args.toArray(new String[args.size()]));
     }
 
+    public static ToolResult invoke(Map<String, String> env, List<String> args)
+    {
+        return invoke(env, args.toArray(new String[args.size()]));
+    }
+
     public static ToolResult invoke(String... args) 
     {
         try (ObservableTool  t = invokeAsync(args))
@@ -204,9 +209,22 @@ public class ToolRunner
         }
     }
 
+    public static ToolResult invoke(Map<String, String> env, String... args)
+    {
+        try (ObservableTool  t = invokeAsync(env, args))
+        {
+            return t.waitComplete();
+        }
+    }
+
     public static ObservableTool invokeAsync(String... args)
     {
         return invokeAsync(Collections.emptyMap(), null, Arrays.asList(args));
+    }
+
+    public static ObservableTool invokeAsync(Map<String, String> env, String... args)
+    {
+        return invokeAsync(env, null, Arrays.asList(args));
     }
 
     public static ToolResult invoke(Map<String, String> env, InputStream stdin, List<String> args)
@@ -389,19 +407,28 @@ public class ToolRunner
         {
             return e;
         }
+
+        /**
+         * Checks if the stdErr is empty after removing any potential JVM env info output and other noise
+         *
+         * Some JVM configs may output env info on stdErr. We need to remove those to see what was the tool's actual
+         * stdErr
+         */
+        public void assertCleanStdErr()
+        {
+            assertCleanStdErr(DEFAULT_CLEANERS);
+        }
         
         /**
          * Checks if the stdErr is empty after removing any potential JVM env info output and other noise
          * 
          * Some JVM configs may output env info on stdErr. We need to remove those to see what was the tool's actual
          * stdErr
-         * 
-         * @return The ToolRunner instance
          */
-        public void assertCleanStdErr()
+        public void assertCleanStdErr(List<String> regExpCleaners)
         {
             String raw = getStderr();
-            String cleaned = getCleanedStderr();
+            String cleaned = getCleanedStderr(regExpCleaners);
             assertTrue("Failed to clean stderr completely.\nRaw (length=" + raw.length() + "):\n" + raw +
                        "\nCleaned (length=" + cleaned.length() + "):\n" + cleaned,
                        cleaned.trim().isEmpty());
@@ -454,11 +481,16 @@ public class ToolRunner
         {
             return getCleanedStderr(DEFAULT_CLEANERS);
         }
-        
+
         public void assertOnCleanExit()
         {
+            assertOnCleanExit(DEFAULT_CLEANERS);
+        }
+
+        public void assertOnCleanExit(List<String> regExpCleaners)
+        {
             assertOnExitCode();
-            assertCleanStdErr();
+            assertCleanStdErr(regExpCleaners);
         }
 
         public AssertHelp asserts()
@@ -569,11 +601,8 @@ public class ToolRunner
 
     private static final class ForkedObservableTool implements ObservableTool
     {
-        @SuppressWarnings("resource")
         private final ByteArrayOutputStream err = new ByteArrayOutputStream();
-        @SuppressWarnings("resource")
         private final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        @SuppressWarnings("resource")
         private final InputStream stdin;
         private final Process process;
         private final Thread[] ioWatchers;

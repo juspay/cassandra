@@ -35,6 +35,7 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.schema.*;
 import org.apache.cassandra.schema.Keyspaces.KeyspacesDiff;
 import org.apache.cassandra.service.ClientState;
+import org.apache.cassandra.tcm.ClusterMetadata;
 import org.apache.cassandra.transport.Event.SchemaChange;
 import org.apache.cassandra.transport.Event.SchemaChange.Change;
 
@@ -65,13 +66,15 @@ public final class DropFunctionStatement extends AlterSchemaStatement
         this.ifExists = ifExists;
     }
 
-    public Keyspaces apply(Keyspaces schema)
+    @Override
+    public Keyspaces apply(ClusterMetadata metadata)
     {
         String name =
             argumentsSpeficied
           ? format("%s.%s(%s)", keyspaceName, functionName, join(", ", transform(arguments, CQL3Type.Raw::toString)))
           : format("%s.%s", keyspaceName, functionName);
 
+        Keyspaces schema = metadata.schema.getKeyspaces();
         KeyspaceMetadata keyspace = schema.getNullable(keyspaceName);
         if (null == keyspace)
         {
@@ -92,7 +95,7 @@ public final class DropFunctionStatement extends AlterSchemaStatement
         }
 
         arguments.stream()
-                 .filter(raw -> !raw.isTuple() && raw.isFrozen())
+                 .filter(raw -> !raw.isImplicitlyFrozen() && raw.isFrozen())
                  .findFirst()
                  .ifPresent(t -> { throw ire("Argument '%s' cannot be frozen; remove frozen<> modifier from '%s'", t, t); });
 
@@ -119,6 +122,13 @@ public final class DropFunctionStatement extends AlterSchemaStatement
 
         if (!dependentAggregates.isEmpty())
             throw ire("Function '%s' is still referenced by aggregates %s", name, dependentAggregates);
+
+        String dependentTables = keyspace.tablesUsingFunction(function)
+                                         .map(table -> table.name)
+                                         .collect(joining(", "));
+
+        if (!dependentTables.isEmpty())
+            throw ire("Function '%s' is still referenced by column masks in tables %s", name, dependentTables);
 
         return schema.withAddedOrUpdated(keyspace.withSwapped(keyspace.userFunctions.without(function)));
     }

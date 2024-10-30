@@ -19,6 +19,11 @@ package org.apache.cassandra.db.virtual;
 
 import com.google.common.collect.ImmutableList;
 
+import org.apache.cassandra.db.virtual.model.ThreadPoolRow;
+import org.apache.cassandra.db.virtual.walker.ThreadPoolRowWalker;
+import org.apache.cassandra.index.sai.virtual.StorageAttachedIndexTables;
+
+import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 import static org.apache.cassandra.schema.SchemaConstants.VIRTUAL_VIEWS;
 
 public final class SystemViewsKeyspace extends VirtualKeyspace
@@ -33,7 +38,13 @@ public final class SystemViewsKeyspace extends VirtualKeyspace
                     .add(new SettingsTable(VIRTUAL_VIEWS))
                     .add(new SystemPropertiesTable(VIRTUAL_VIEWS))
                     .add(new SSTableTasksTable(VIRTUAL_VIEWS))
-                    .add(new ThreadPoolsTable(VIRTUAL_VIEWS))
+                    // Fully backward/forward compatible with the legace ThreadPoolsTable under the same "system_views.thread_pools" name.
+                    .add(CollectionVirtualTableAdapter.create(VIRTUAL_VIEWS,
+                                                              "thread_pools",
+                                                              "Thread pool metrics for all thread pools",
+                                                              new ThreadPoolRowWalker(),
+                                                              Metrics.allThreadPoolMetrics(),
+                                                              ThreadPoolRow::new))
                     .add(new InternodeOutboundTable(VIRTUAL_VIEWS))
                     .add(new InternodeInboundTable(VIRTUAL_VIEWS))
                     .add(new PendingHintsTable(VIRTUAL_VIEWS))
@@ -49,7 +60,14 @@ public final class SystemViewsKeyspace extends VirtualKeyspace
                     .add(new GossipInfoTable(VIRTUAL_VIEWS))
                     .add(new QueriesTable(VIRTUAL_VIEWS))
                     .add(new LogMessagesTable(VIRTUAL_VIEWS))
+                    .add(new SnapshotsTable(VIRTUAL_VIEWS))
+                    .add(new PeersTable(VIRTUAL_VIEWS))
+                    .add(new LocalTable(VIRTUAL_VIEWS))
+                    .add(new ClusterMetadataLogTable(VIRTUAL_VIEWS))
+                    .add(new ClusterMetadataDirectoryTable(VIRTUAL_VIEWS))
                     .addAll(LocalRepairTables.getAll(VIRTUAL_VIEWS))
+                    .addAll(CIDRFilteringMetricsTable.getAll(VIRTUAL_VIEWS))
+                    .addAll(StorageAttachedIndexTables.getAll(VIRTUAL_VIEWS))
                     .build());
     }
 }

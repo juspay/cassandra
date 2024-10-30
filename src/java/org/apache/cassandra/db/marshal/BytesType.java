@@ -20,8 +20,9 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.cql3.Constants;
-import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.terms.Term;
+import org.apache.cassandra.cql3.functions.ArgumentDeserializer;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.BytesSerializer;
 import org.apache.cassandra.serializers.MarshalException;
@@ -36,6 +37,12 @@ public class BytesType extends AbstractType<ByteBuffer>
     private static final ByteBuffer MASKED_VALUE = ByteBufferUtil.EMPTY_BYTE_BUFFER;
 
     BytesType() {super(ComparisonType.BYTE_ORDER);} // singleton
+
+    @Override
+    public boolean allowsEmpty()
+    {
+        return true;
+    }
 
     public ByteBuffer fromString(String source)
     {
@@ -95,6 +102,12 @@ public class BytesType extends AbstractType<ByteBuffer>
     public TypeSerializer<ByteBuffer> getSerializer()
     {
         return BytesSerializer.instance;
+    }
+
+    @Override
+    public ArgumentDeserializer getArgumentDeserializer()
+    {
+        return ArgumentDeserializer.NOOP_DESERIALIZER;
     }
 
     @Override

@@ -37,6 +37,7 @@ import java.util.function.Supplier;
 
 import com.google.common.annotations.VisibleForTesting;
 
+import jdk.internal.ref.Cleaner;
 import net.nicoulaj.compilecommand.annotations.Inline;
 import org.apache.cassandra.concurrent.Shutdownable;
 import org.slf4j.Logger;
@@ -50,6 +51,8 @@ import org.apache.cassandra.metrics.BufferPoolMetrics;
 import org.apache.cassandra.utils.NoSpamLogger;
 import org.apache.cassandra.utils.Shared;
 import org.apache.cassandra.utils.concurrent.Ref;
+import org.apache.cassandra.utils.concurrent.Ref.DirectBufferRef;
+import sun.nio.ch.DirectBuffer;
 
 import static com.google.common.collect.ImmutableList.of;
 import static org.apache.cassandra.concurrent.ExecutorFactory.Global.executorFactory;
@@ -874,7 +877,8 @@ public class BufferPool
         public void putUnusedPortion(ByteBuffer buffer)
         {
             Chunk chunk = Chunk.getParentChunk(buffer);
-            int size = buffer.capacity() - buffer.limit();
+            int originalCapacity = buffer.capacity();
+            int size = originalCapacity - buffer.limit();
 
             if (chunk == null)
             {
@@ -883,7 +887,8 @@ public class BufferPool
             }
 
             chunk.freeUnusedPortion(buffer);
-            memoryInUse.add(-size);
+            // Calculate the actual freed bytes which may be different from `size` when pooling is involved
+            memoryInUse.add(buffer.capacity() - originalCapacity);
         }
 
         public ByteBuffer get(int size)
@@ -1127,7 +1132,7 @@ public class BufferPool
      * When we reiceve a release request we work out the position by comparing the buffer
      * address to our base address and we simply release the units.
      */
-    final static class Chunk
+    final static class Chunk implements DirectBuffer
     {
         enum Status
         {
@@ -1180,6 +1185,24 @@ public class BufferPool
             this.shift = 31 & (Integer.numberOfTrailingZeros(slab.capacity() / 64));
             // -1 means all free whilst 0 means all in use
             this.freeSlots = slab.capacity() == 0 ? 0L : -1L;
+        }
+
+        @Override
+        public long address()
+        {
+            return baseAddress;
+        }
+
+        @Override
+        public Object attachment()
+        {
+            return MemoryUtil.getAttachment(slab);
+        }
+
+        @Override
+        public Cleaner cleaner()
+        {
+            return null;
         }
 
         /**
@@ -1299,8 +1322,8 @@ public class BufferPool
             if (attachment instanceof Chunk)
                 return (Chunk) attachment;
 
-            if (attachment instanceof Ref)
-                return ((Ref<Chunk>) attachment).get();
+            if (attachment instanceof DirectBufferRef)
+                return ((DirectBufferRef<Chunk>) attachment).get();
 
             return null;
         }
@@ -1308,7 +1331,7 @@ public class BufferPool
         void setAttachment(ByteBuffer buffer)
         {
             if (Ref.DEBUG_ENABLED)
-                MemoryUtil.setAttachment(buffer, new Ref<>(this, null));
+                MemoryUtil.setAttachment(buffer, new DirectBufferRef<>(this, null));
             else
                 MemoryUtil.setAttachment(buffer, this);
         }
@@ -1320,7 +1343,7 @@ public class BufferPool
                 return false;
 
             if (Ref.DEBUG_ENABLED)
-                ((Ref<Chunk>) attachment).release();
+                ((DirectBufferRef<Chunk>) attachment).release();
 
             return true;
         }

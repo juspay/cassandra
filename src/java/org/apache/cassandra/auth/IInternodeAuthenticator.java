@@ -33,8 +33,9 @@ public interface IInternodeAuthenticator
      * @param remoteAddress ip address of the connecting node.
      * @param remotePort port of the connecting node.
      * @return true if the connection should be accepted, false otherwise.
+     * @deprecated See CASSANDRA-17661
      */
-    @Deprecated
+    @Deprecated(since = "5.0")
     default boolean authenticate(InetAddress remoteAddress, int remotePort)
     {
         return false;
@@ -74,7 +75,7 @@ public interface IInternodeAuthenticator
     /**
      * Setup is called once upon system startup to initialize the IAuthenticator.
      *
-     * For example, use this method to create any required keyspaces/column families.
+     * For example, use this method to do any required initialization of the class.
      */
     default void setupInternode()
     {

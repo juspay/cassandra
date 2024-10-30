@@ -56,11 +56,11 @@ import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.io.sstable.ReducingKeyIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.service.StorageProxy;
+import org.apache.cassandra.transport.Dispatcher;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.TimeUUID;
 import org.apache.cassandra.utils.concurrent.Refs;
 
-import static org.apache.cassandra.utils.Clock.Global.nanoTime;
 import static org.apache.cassandra.utils.TimeUUID.Generator.nextTimeUUID;
 
 public class ViewBuilderTask extends CompactionInfo.Holder implements Callable<Long>
@@ -89,7 +89,6 @@ public class ViewBuilderTask extends CompactionInfo.Holder implements Callable<L
         this.keysBuilt = keysBuilt;
     }
 
-    @SuppressWarnings("resource")
     private void buildKey(DecoratedKey key)
     {
         ReadQuery selectQuery = view.getReadQuery();
@@ -100,7 +99,7 @@ public class ViewBuilderTask extends CompactionInfo.Holder implements Callable<L
             return;
         }
 
-        int nowInSec = FBUtilities.nowInSeconds();
+        long nowInSec = FBUtilities.nowInSeconds();
         SinglePartitionReadCommand command = view.getSelectStatement().internalReadForView(key, nowInSec);
 
         // We're rebuilding everything from what's on disk, so we read everything, consider that as new updates
@@ -111,11 +110,11 @@ public class ViewBuilderTask extends CompactionInfo.Holder implements Callable<L
              UnfilteredRowIterator data = UnfilteredPartitionIterators.getOnlyElement(command.executeLocally(orderGroup), command))
         {
             Iterator<Collection<Mutation>> mutations = baseCfs.keyspace.viewManager
-                                                       .forTable(baseCfs.metadata.id)
+                                                       .forTable(baseCfs.metadata.get())
                                                        .generateViewUpdates(Collections.singleton(view), data, empty, nowInSec, true);
 
             AtomicLong noBase = new AtomicLong(Long.MAX_VALUE);
-            mutations.forEachRemaining(m -> StorageProxy.mutateMV(key.getKey(), m, true, noBase, nanoTime()));
+            mutations.forEachRemaining(m -> StorageProxy.mutateMV(key.getKey(), m, true, noBase, Dispatcher.RequestTime.forImmediateExecution()));
         }
     }
 
@@ -135,7 +134,7 @@ public class ViewBuilderTask extends CompactionInfo.Holder implements Callable<L
          */
         boolean schemaConverged = Gossiper.instance.waitForSchemaAgreement(10, TimeUnit.SECONDS, () -> this.isStopped);
         if (!schemaConverged)
-            logger.warn("Failed to get schema to converge before building view {}.{}", baseCfs.keyspace.getName(), view.name);
+            logger.warn("Failed to get schema to converge before building view {}.{}", baseCfs.getKeyspaceName(), view.name);
 
         Function<org.apache.cassandra.db.lifecycle.View, Iterable<SSTableReader>> function;
         function = org.apache.cassandra.db.lifecycle.View.select(SSTableSet.CANONICAL, s -> range.intersects(s.getBounds()));
@@ -175,7 +174,7 @@ public class ViewBuilderTask extends CompactionInfo.Holder implements Callable<L
 
     private void finish()
     {
-        String ksName = baseCfs.keyspace.getName();
+        String ksName = baseCfs.getKeyspaceName();
         if (!isStopped)
         {
             // Save the completed status using the end of the range as last token. This way it will be possible for

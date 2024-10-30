@@ -26,6 +26,7 @@ import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.pager.QueryPager;
 import org.apache.cassandra.service.pager.PagingState;
+import org.apache.cassandra.transport.Dispatcher;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -48,7 +49,7 @@ public interface ReadQuery
                 return ReadExecutionController.empty();
             }
 
-            public PartitionIterator execute(ConsistencyLevel consistency, ClientState state, long queryStartNanoTime) throws RequestExecutionException
+            public PartitionIterator execute(ConsistencyLevel consistency, ClientState state, Dispatcher.RequestTime requestTime) throws RequestExecutionException
             {
                 return EmptyIterators.partition();
             }
@@ -87,7 +88,7 @@ public interface ReadQuery
             }
 
             @Override
-            public int nowInSec()
+            public long nowInSec()
             {
                 return FBUtilities.nowInSeconds();
             }
@@ -107,7 +108,7 @@ public interface ReadQuery
             @Override
             public RowFilter rowFilter()
             {
-                return RowFilter.NONE;
+                return RowFilter.none();
             }
 
             @Override
@@ -125,10 +126,15 @@ public interface ReadQuery
      */
     public TableMetadata metadata();
 
+    default DataRange dataRange()
+    {
+        throw new UnsupportedOperationException("dataRange() must be implemented by implementation class");
+    }
+
     /**
      * Starts a new read operation.
      * <p>
-     * This must be called before {@link executeInternal} and passed to it to protect the read.
+     * This must be called before {@link #executeInternal} and passed to it to protect the read.
      * The returned object <b>must</b> be closed on all path and it is thus strongly advised to
      * use it in a try-with-ressource construction.
      *
@@ -141,9 +147,10 @@ public interface ReadQuery
      *
      * @param consistency the consistency level to achieve for the query.
      * @param state client state
+     * @param requestTime request enqueue / and start times
      * @return the result of the query.
      */
-    public PartitionIterator execute(ConsistencyLevel consistency, ClientState state, long queryStartNanoTime) throws RequestExecutionException;
+    public PartitionIterator execute(ConsistencyLevel consistency, ClientState state, Dispatcher.RequestTime requestTime) throws RequestExecutionException;
 
     /**
      * Execute the query for internal queries (that is, it basically executes the query locally).
@@ -201,7 +208,7 @@ public interface ReadQuery
      *
      * @return the time (in seconds) to use as "now".
      */
-    public int nowInSec();
+    public long nowInSec();
 
     /**
      * Checks if this {@code ReadQuery} selects full partitions, that is it has no filtering on clustering or regular columns.
@@ -255,5 +262,16 @@ public interface ReadQuery
 
     default void trackWarnings()
     {
+    }
+
+    /**
+     * The query is a top-k query if the query has an {@link org.apache.cassandra.index.Index.QueryPlan} that
+     * supports top-k ordering.
+     *
+     * @return {@code true} if this is a top-k query
+     */
+    default boolean isTopK()
+    {
+        return false;
     }
 }

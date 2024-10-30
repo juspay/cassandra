@@ -121,7 +121,7 @@ public class CellSpecTest
     private static long valuePtrSize(Object value)
     {
         if (value instanceof ByteBuffer)
-            return ObjectSizes.sizeOnHeapExcludingData((ByteBuffer) value);
+            return ObjectSizes.sizeOnHeapExcludingDataOf((ByteBuffer) value);
         else if (value instanceof byte[])
             return ObjectSizes.sizeOfArray((byte[]) value) - ((byte[]) value).length;
         throw new IllegalArgumentException("Unsupported type: " + value.getClass());
@@ -131,6 +131,7 @@ public class CellSpecTest
     public static Collection<Object[]> data() {
         TableMetadata table = TableMetadata.builder("testing", "testing")
                                            .addPartitionKeyColumn("pk", BytesType.instance)
+                                           .offline()
                                            .build();
 
         byte[] rawBytes = { 0, 1, 2, 3, 4, 5, 6 };

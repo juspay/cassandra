@@ -28,20 +28,17 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
+import org.apache.cassandra.ServerTestUtils;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.config.CassandraRelevantProperties;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.Duration;
-import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.SchemaKeyspaceTables;
-import org.apache.cassandra.utils.CassandraVersion;
-import org.apache.cassandra.utils.Pair;
 
 import static java.lang.String.format;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 /* InsertUpdateIfConditionCollectionsTest class has been split into multiple ones because of timeout issues (CASSANDRA-16670)
  * Any changes here check if they apply to the other classes
@@ -52,47 +49,38 @@ import static org.junit.Assert.assertTrue;
 @RunWith(Parameterized.class)
 public class InsertUpdateIfConditionTest extends CQLTester
 {
-    @Parameterized.Parameter(0)
-    public String clusterMinVersion;
-
-    @Parameterized.Parameter(1)
-    public Runnable assertion;
-
     @Parameterized.Parameters(name = "{index}: clusterMinVersion={0}")
     public static Collection<Object[]> data()
     {
-        return Arrays.asList(new Object[]{ "3.0", (Runnable) () -> {
-                                 Pair<Boolean, CassandraVersion> res = Gossiper.instance.isUpgradingFromVersionLowerThanC17653(new CassandraVersion("3.11"));
-                                 assertTrue(debugMsgCASSANDRA17653(res), res.left);
-                             } },
-                             new Object[]{ "3.11", (Runnable) () -> {
-                                 Pair<Boolean, CassandraVersion> res = Gossiper.instance.isUpgradingFromVersionLowerThanC17653(SystemKeyspace.CURRENT_VERSION);
-                                 assertTrue(debugMsgCASSANDRA17653(res), res.left);
-                                 res = Gossiper.instance.isUpgradingFromVersionLowerThanC17653(new CassandraVersion("3.11"));
-                                 assertFalse(debugMsgCASSANDRA17653(res), res.left);
-                             } },
-                             new Object[]{ SystemKeyspace.CURRENT_VERSION.toString(), (Runnable) () -> {
-                                 Pair<Boolean, CassandraVersion> res = Gossiper.instance.isUpgradingFromVersionLowerThanC17653(SystemKeyspace.CURRENT_VERSION);
-                                 assertFalse(debugMsgCASSANDRA17653(res), res.left);
-                             } });
+        ServerTestUtils.daemonInitialization();
+        // TODO [tcm] we will require upgrading from 4.1
+        return Arrays.asList(new Object[]{ "4.1" }, new Object[]{ "4.0" });
     }
+
+    @Parameterized.Parameter(0)
+    public String clusterMinVersion;
 
     @BeforeClass
     public static void beforeClass()
     {
+        CassandraRelevantProperties.TCM_ALLOW_TRANSFORMATIONS_DURING_UPGRADES.setBoolean(true);
         Gossiper.instance.start(0);
     }
 
     @Before
     public void before()
     {
-        beforeSetup(clusterMinVersion, assertion);
+        beforeSetup(clusterMinVersion);
     }
     
-    public static void beforeSetup(String clusterMinVersion, Runnable assertion)
+    public static void beforeSetup(String clusterMinVersion)
     {
-        Util.setUpgradeFromVersion(clusterMinVersion);
-        assertion.run();
+        // setUpgradeFromVersion adds node2 to the Gossiper. On slow CI envs the Gossiper might auto-remove it after some
+        // timeout if it thinks it's a fat client making the test fail. Just retry C18393.
+        Util.spinAssertEquals(Boolean.TRUE, () -> {
+            Util.setUpgradeFromVersion(clusterMinVersion);
+            return true;
+        }, 5);
     }
 
     @AfterClass
@@ -105,7 +93,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
      * Migrated from cql_tests.py:TestCQL.cas_simple_test()
      */
     @Test
-    public void testSimpleCas() throws Throwable
+    public void testSimpleCas()
     {
         createTable("CREATE TABLE %s (tkn int, consumed boolean, PRIMARY KEY (tkn))");
 
@@ -176,7 +164,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
         assertRows(execute("DELETE v2 FROM %s WHERE k = 0 IF v1 = ?", 5), row(true));
         assertRows(execute("SELECT * FROM %s"), row(0, 5, null, null));
 
-        // Shouln't apply
+        // Shouldn't apply
         assertRows(execute("DELETE v1 FROM %s WHERE k = 0 IF v3 = ?", 4), row(false, null));
 
         // Should apply
@@ -363,14 +351,14 @@ public class InsertUpdateIfConditionTest extends CQLTester
         Thread.sleep(1001);
         assertRows(execute("UPDATE %s SET v = 1 WHERE k = 0 IF lock = null"),
                    row(true));
-    } 
+    }
 
     /**
      * Test for 7499,
      * migrated from cql_tests.py:TestCQL.cas_and_list_index_test()
      */
     @Test
-    public void testCasAndListIndex() throws Throwable
+    public void testCasAndListIndex()
     {
         createTable("CREATE TABLE %s ( k int PRIMARY KEY, v text, l list<text>)");
 
@@ -427,7 +415,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
     public void testDropCreateTableIfNotExists() throws Throwable
     {
         String tableName = createTableName();
-        String fullTableName = KEYSPACE + "." + tableName;
+        String fullTableName = KEYSPACE + '.' + tableName;
 
         // try dropping when doesn't exist
         schemaChange("DROP TABLE IF EXISTS " + fullTableName);
@@ -454,17 +442,15 @@ public class InsertUpdateIfConditionTest extends CQLTester
      * Migrated from cql_tests.py:TestCQL.conditional_ddl_index_test()
      */
     @Test
-    public void testDropCreateIndexIfNotExists() throws Throwable
+    public void testDropCreateIndexIfNotExists()
     {
-        String tableName = createTable("CREATE TABLE %s (id text PRIMARY KEY, value1 blob, value2 blob)with comment = 'foo'");
+        String tableName = createTable("CREATE TABLE %s (id text PRIMARY KEY, value1 text, value2 blob)with comment = 'foo'");
 
         // try dropping when doesn't exist
         schemaChange(format("DROP INDEX IF EXISTS %s.myindex", KEYSPACE));
 
         // create and confirm
         createIndex("CREATE INDEX IF NOT EXISTS myindex ON %s (value1)");
-
-        assertTrue(waitForIndex(KEYSPACE, tableName, "myindex"));
 
         // unsuccessful create since it's already there
         execute("CREATE INDEX IF NOT EXISTS myindex ON %s (value1)");
@@ -484,7 +470,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
     {
         execute("use " + KEYSPACE);
 
-        // try dropping when doesn 't exist
+        // try dropping when doesn't exist
         execute("DROP TYPE IF EXISTS mytype");
 
         // create and confirm
@@ -544,7 +530,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
     }
 
     @Test
-    public void testConditionalUpdatesWithNullValues() throws Throwable
+    public void testConditionalUpdatesWithNullValues()
     {
         createTable("CREATE TABLE %s (a int, b int, s int static, d int, PRIMARY KEY (a, b))");
 
@@ -616,7 +602,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
     }
 
     @Test
-    public void testConditionalUpdatesWithNullValuesWithBatch() throws Throwable
+    public void testConditionalUpdatesWithNullValuesWithBatch()
     {
         createTable("CREATE TABLE %s (a int, b int, s int static, d text, PRIMARY KEY (a, b))");
 
@@ -731,7 +717,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
     }
 
     @Test
-    public void testConditionalDeleteWithNullValues() throws Throwable
+    public void testConditionalDeleteWithNullValues()
     {
         createTable("CREATE TABLE %s (a int, b int, s1 int static, s2 int static, v int, PRIMARY KEY (a, b))");
 
@@ -857,8 +843,8 @@ public class InsertUpdateIfConditionTest extends CQLTester
         // As all statement gets the same timestamp, the biggest value ends up winning, so that's "foo"
         assertRows(execute("SELECT * FROM %s WHERE k = 1"), row(1, "foo", null));
 
-        // Multiple deletes on the same row with exists conditions (note that this is somewhat non-sensical, one of the
-        // delete is redundant, we're just checking it doesn't break something)
+        // Multiple deletes on the same row with exists conditions (note that this is somewhat none-sensical, one of the
+        // deletes is redundant, we're just checking it doesn't break something)
         assertRows(execute("BEGIN BATCH "
                            + "DELETE FROM %1$s WHERE k = 0 IF EXISTS; "
                            + "DELETE FROM %1$s WHERE k = 0 IF EXISTS; "
@@ -909,8 +895,8 @@ public class InsertUpdateIfConditionTest extends CQLTester
         // As all statement gets the same timestamp, the biggest value ends up winning, so that's "foo"
         assertRows(execute("SELECT * FROM %s WHERE k = 1"), row(1, 0, "foo", null));
 
-        // Multiple deletes on the same row with exists conditions (note that this is somewhat non-sensical, one of the
-        // delete is redundant, we're just checking it doesn't break something)
+        // Multiple deletes on the same row with exists conditions (note that this is somewhat none-sensical, one of the
+        // deletes is redundant, we're just checking it doesn't break something)
         assertRows(execute("BEGIN BATCH "
                            + "DELETE FROM %1$s WHERE k = 0 AND t = 0 IF EXISTS; "
                            + "DELETE FROM %1$s WHERE k = 0 AND t = 0 IF EXISTS; "
@@ -963,11 +949,5 @@ public class InsertUpdateIfConditionTest extends CQLTester
         assertRows(execute("UPDATE %s SET d = 10s WHERE k = 1 IF d IN (1s, 2s)"), row(true));
 
         assertRows(execute("SELECT * FROM %s WHERE k = 1"), row(1, Duration.from("10s"), 6));
-    }
-
-    // Helper to debug on the next occurrence of CASSANDRA-17653
-    private static String debugMsgCASSANDRA17653(Pair<Boolean, CassandraVersion> res)
-    {
-        return("Failed on Cass Version: " + res.right == null ? "null" : res.right + " boolean:" + res.left);
     }
 }

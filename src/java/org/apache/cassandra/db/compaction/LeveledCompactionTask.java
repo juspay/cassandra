@@ -34,7 +34,7 @@ public class LeveledCompactionTask extends CompactionTask
     private final long maxSSTableBytes;
     private final boolean majorCompaction;
 
-    public LeveledCompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int level, int gcBefore, long maxSSTableBytes, boolean majorCompaction)
+    public LeveledCompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int level, long gcBefore, long maxSSTableBytes, boolean majorCompaction)
     {
         super(cfs, txn, gcBefore);
         this.level = level;
@@ -56,7 +56,7 @@ public class LeveledCompactionTask extends CompactionTask
     @Override
     protected boolean partialCompactionsAcceptable()
     {
-        throw new UnsupportedOperationException("This is now handled in reduceScopeForLimitedSpace");
+        return level == 0;
     }
 
     protected int getLevel()

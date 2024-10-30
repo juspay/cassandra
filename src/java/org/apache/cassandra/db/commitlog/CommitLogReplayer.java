@@ -19,7 +19,16 @@
 package org.apache.cassandra.db.commitlog;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -38,7 +47,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
@@ -56,17 +64,19 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WrappedRunnable;
 
 import static java.lang.String.format;
+import static org.apache.cassandra.config.CassandraRelevantProperties.COMMITLOG_IGNORE_REPLAY_ERRORS;
+import static org.apache.cassandra.config.CassandraRelevantProperties.COMMITLOG_MAX_OUTSTANDING_REPLAY_BYTES;
+import static org.apache.cassandra.config.CassandraRelevantProperties.COMMITLOG_MAX_OUTSTANDING_REPLAY_COUNT;
 import static org.apache.cassandra.config.CassandraRelevantProperties.COMMIT_LOG_REPLAY_LIST;
 
 public class CommitLogReplayer implements CommitLogReadHandler
 {
     @VisibleForTesting
-    public static long MAX_OUTSTANDING_REPLAY_BYTES = Long.getLong("cassandra.commitlog_max_outstanding_replay_bytes", 1024 * 1024 * 64);
+    public static long MAX_OUTSTANDING_REPLAY_BYTES = COMMITLOG_MAX_OUTSTANDING_REPLAY_BYTES.getLong();
     @VisibleForTesting
     public static MutationInitiator mutationInitiator = new MutationInitiator();
-    static final String IGNORE_REPLAY_ERRORS_PROPERTY = Config.PROPERTY_PREFIX + "commitlog.ignorereplayerrors";
     private static final Logger logger = LoggerFactory.getLogger(CommitLogReplayer.class);
-    private static final int MAX_OUTSTANDING_REPLAY_COUNT = Integer.getInteger(Config.PROPERTY_PREFIX + "commitlog_max_outstanding_replay_count", 1024);
+    private static final int MAX_OUTSTANDING_REPLAY_COUNT = COMMITLOG_MAX_OUTSTANDING_REPLAY_COUNT.getInt();
 
     private final Set<Keyspace> keyspacesReplayed;
     private final Queue<Future<Integer>> futures;
@@ -79,7 +89,7 @@ public class CommitLogReplayer implements CommitLogReadHandler
     private long pendingMutationBytes = 0;
 
     private final ReplayFilter replayFilter;
-    private final CommitLogArchiver archiver;
+    private CommitLogArchiver archiver;
 
     @VisibleForTesting
     protected boolean sawCDCMutation;
@@ -118,7 +128,8 @@ public class CommitLogReplayer implements CommitLogReadHandler
                 // Point in time restore is taken to mean that the tables need to be replayed even if they were
                 // deleted at a later point in time. Any truncation record after that point must thus be cleared prior
                 // to replay (CASSANDRA-9195).
-                long restoreTime = commitLog.archiver.restorePointInTime;
+                // truncatedTime is millseconds level but restoreTime is microlevel
+                long restoreTime = commitLog.archiver.restorePointInTimeInMicroseconds == Long.MAX_VALUE ? Long.MAX_VALUE : commitLog.archiver.restorePointInTimeInMicroseconds / 1000;
                 long truncatedTime = SystemKeyspace.getTruncatedAt(cfs.metadata.id);
                 if (truncatedTime > restoreTime)
                 {
@@ -144,7 +155,7 @@ public class CommitLogReplayer implements CommitLogReadHandler
                 }
                 else
                 {
-                    if (commitLog.archiver.restorePointInTime == Long.MAX_VALUE)
+                    if (commitLog.archiver.getRestorePointInTimeInMicroseconds() == Long.MAX_VALUE)
                     {
                         // Normal restart, everything is persisted and restored by the memtable itself.
                         filter = new IntervalSet<>(CommitLogPosition.NONE, CommitLog.instance.getCurrentPosition());
@@ -490,11 +501,9 @@ public class CommitLogReplayer implements CommitLogReadHandler
 
     protected boolean pointInTimeExceeded(Mutation fm)
     {
-        long restoreTarget = archiver.restorePointInTime;
-
         for (PartitionUpdate upd : fm.getPartitionUpdates())
         {
-            if (archiver.precision.toMillis(upd.maxTimestamp()) > restoreTarget)
+            if (archiver.precision.toMicros(upd.maxTimestamp()) > archiver.restorePointInTimeInMicroseconds)
                 return true;
         }
         return false;
@@ -525,13 +534,13 @@ public class CommitLogReplayer implements CommitLogReadHandler
     {
         if (exception.permissible)
             logger.error("Ignoring commit log replay error likely due to incomplete flush to disk", exception);
-        else if (Boolean.getBoolean(IGNORE_REPLAY_ERRORS_PROPERTY))
+        else if (COMMITLOG_IGNORE_REPLAY_ERRORS.getBoolean())
             logger.error("Ignoring commit log replay error", exception);
         else if (!CommitLog.handleCommitError("Failed commit log replay", exception))
         {
             logger.error("Replay stopped. If you wish to override this error and continue starting the node ignoring " +
-                         "commit log replay problems, specify -D" + IGNORE_REPLAY_ERRORS_PROPERTY + "=true " +
-                         "on the command line");
+                         "commit log replay problems, specify -D{}=true on the command line",
+                         COMMITLOG_IGNORE_REPLAY_ERRORS.getKey());
             throw new CommitLogReplayException(exception.getMessage(), exception);
         }
         return false;

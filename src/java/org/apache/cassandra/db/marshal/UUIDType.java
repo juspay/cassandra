@@ -24,8 +24,9 @@ import java.util.regex.Pattern;
 import com.google.common.primitives.UnsignedLongs;
 
 import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.cql3.Constants;
-import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.terms.Constants;
+import org.apache.cassandra.cql3.terms.Term;
+import org.apache.cassandra.cql3.functions.ArgumentDeserializer;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.UUIDSerializer;
@@ -49,6 +50,8 @@ public class UUIDType extends AbstractType<UUID>
 {
     public static final UUIDType instance = new UUIDType();
 
+    private static final ArgumentDeserializer ARGUMENT_DESERIALIZER = new DefaultArgumentDeserializer(instance);
+
     private static final ByteBuffer MASKED_VALUE = instance.decompose(UUID.fromString("00000000-0000-0000-0000-000000000000"));
 
     UUIDType()
@@ -56,6 +59,13 @@ public class UUIDType extends AbstractType<UUID>
         super(ComparisonType.CUSTOM);
     }
 
+    @Override
+    public boolean allowsEmpty()
+    {
+        return true;
+    }
+
+    @Override
     public boolean isEmptyValueMeaningless()
     {
         return true;
@@ -189,9 +199,16 @@ public class UUIDType extends AbstractType<UUID>
         return CQL3Type.Native.UUID;
     }
 
+    @Override
     public TypeSerializer<UUID> getSerializer()
     {
         return UUIDSerializer.instance;
+    }
+
+    @Override
+    public ArgumentDeserializer getArgumentDeserializer()
+    {
+        return ARGUMENT_DESERIALIZER;
     }
 
     static final Pattern regexPattern = Pattern.compile("[A-Fa-f0-9]{8}\\-[A-Fa-f0-9]{4}\\-[A-Fa-f0-9]{4}\\-[A-Fa-f0-9]{4}\\-[A-Fa-f0-9]{12}");

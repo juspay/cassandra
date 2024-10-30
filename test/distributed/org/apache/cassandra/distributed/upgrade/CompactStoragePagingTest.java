@@ -24,6 +24,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import org.apache.cassandra.distributed.api.ConsistencyLevel;
+import org.apache.cassandra.distributed.api.Feature;
 
 public class CompactStoragePagingTest extends UpgradeTestBase
 {
@@ -33,7 +34,8 @@ public class CompactStoragePagingTest extends UpgradeTestBase
         new TestCase()
         .nodes(2)
         .nodesToUpgrade(2)
-        .upgradesToCurrentFrom(v30)
+        .withConfig(c -> c.with(Feature.GOSSIP))
+        .upgradesToCurrentFrom(v40)
         .setup((cluster) -> {
             cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck)) WITH COMPACT STORAGE");
             for (int i = 1; i < 10; i++)

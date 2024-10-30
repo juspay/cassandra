@@ -17,7 +17,16 @@
  */
 package org.apache.cassandra.cql3.validation.operations;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
+import java.util.UUID;
+
+import org.junit.Assert;
+import org.junit.Test;
+
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.Duration;
 import org.apache.cassandra.db.Mutation;
@@ -30,30 +39,52 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.locator.AbstractEndpointSnitch;
-import org.apache.cassandra.locator.IEndpointSnitch;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.schema.*;
-import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.schema.MemtableParams;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.schema.SchemaConstants;
+import org.apache.cassandra.schema.SchemaKeyspaceTables;
+import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.tcm.ClusterMetadataService;
+import org.apache.cassandra.tcm.membership.Location;
+import org.apache.cassandra.tcm.membership.NodeAddresses;
+import org.apache.cassandra.tcm.membership.NodeVersion;
+import org.apache.cassandra.tcm.transformations.Register;
 import org.apache.cassandra.triggers.ITrigger;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.junit.Assert;
-import org.junit.Test;
-
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Map;
-import java.util.UUID;
 
 import static java.lang.String.format;
-import static org.apache.cassandra.cql3.Duration.*;
-import static org.junit.Assert.*;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_HOUR;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_MICRO;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_MILLI;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_MINUTE;
+import static org.apache.cassandra.tcm.membership.MembershipUtils.endpoint;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class CreateTest extends CQLTester
 {
+    @Test
+    public void testCreateTableWithNameCapitalPAndColumnDuration() throws Throwable
+    {
+        // CASSANDRA-17919
+        createTable(KEYSPACE, "CREATE TABLE %s (a INT PRIMARY KEY, b DURATION);", "P");
+        execute("INSERT INTO %s (a, b) VALUES (1, PT0S)");
+        assertRows(execute("SELECT * FROM %s"), row(1, Duration.newInstance(0, 0, 0)));
+    }
+
+    @Test
+    public void testCreateKeyspaceWithNameCapitalP() throws Throwable
+    {
+        // CASSANDRA-17919
+        executeFormattedQuery("CREATE KEYSPACE IF NOT EXISTS P WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}");
+        executeFormattedQuery("DROP KEYSPACE P");
+    }
+
     @Test
     public void testCreateTableWithSmallintColumns() throws Throwable
     {
@@ -527,31 +558,12 @@ public class CreateTest extends CQLTester
     // tests CASSANDRA-4278
     public void testHyphenDatacenters() throws Throwable
     {
-        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-
-        // Register an EndpointSnitch which returns fixed values for test.
-        DatabaseDescriptor.setEndpointSnitch(new AbstractEndpointSnitch()
-        {
-            @Override
-            public String getRack(InetAddressAndPort endpoint) { return RACK1; }
-
-            @Override
-            public String getDatacenter(InetAddressAndPort endpoint) { return "us-east-1"; }
-
-            @Override
-            public int compareEndpoints(InetAddressAndPort target, Replica a1, Replica a2) { return 0; }
-        });
-
-        // this forces the dc above to be added to the list of known datacenters (fixes static init problem
+        // this forces the dc 'us-east-1' to be added to the list of known datacenters (fixes static init problem
         // with this group of tests), ok to remove at some point if doing so doesn't break the test
-        StorageService.instance.getTokenMetadata().updateHostId(UUID.randomUUID(), InetAddressAndPort.getByName("127.0.0.255"));
+        ClusterMetadataService.instance().commit(new Register(new NodeAddresses(endpoint(255)),
+                                                              new Location("us-east-1", RACK1),
+                                                              NodeVersion.CURRENT));
         execute("CREATE KEYSPACE Foo WITH replication = { 'class' : 'NetworkTopologyStrategy', 'us-east-1' : 1 };");
-
-        // Restore the previous EndpointSnitch
-        DatabaseDescriptor.setEndpointSnitch(snitch);
-
-        // clean up
-        execute("DROP KEYSPACE IF EXISTS Foo");
     }
 
     @Test
@@ -664,24 +676,16 @@ public class CreateTest extends CQLTester
         assertSchemaOption("compression", map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor"));
 
         createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                + " WITH compression = { 'sstable_compression' : 'SnappyCompressor', 'chunk_length_kb' : 32 };");
-        assertSchemaOption("compression", map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor"));
-
-        createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                + " WITH compression = { 'sstable_compression' : 'SnappyCompressor', 'min_compress_ratio' : 2 };");
+                + " WITH compression = { 'class' : 'SnappyCompressor', 'min_compress_ratio' : 2 };");
         assertSchemaOption("compression", map("chunk_length_in_kb", "16", "class", "org.apache.cassandra.io.compress.SnappyCompressor", "min_compress_ratio", "2.0"));
 
         createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                    + " WITH compression = { 'sstable_compression' : 'SnappyCompressor', 'min_compress_ratio' : 1 };");
+                    + " WITH compression = { 'class' : 'SnappyCompressor', 'min_compress_ratio' : 1 };");
         assertSchemaOption("compression", map("chunk_length_in_kb", "16", "class", "org.apache.cassandra.io.compress.SnappyCompressor", "min_compress_ratio", "1.0"));
 
         createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                    + " WITH compression = { 'sstable_compression' : 'SnappyCompressor', 'min_compress_ratio' : 0 };");
+                    + " WITH compression = { 'class' : 'SnappyCompressor', 'min_compress_ratio' : 0 };");
         assertSchemaOption("compression", map("chunk_length_in_kb", "16", "class", "org.apache.cassandra.io.compress.SnappyCompressor"));
-
-        createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                + " WITH compression = { 'sstable_compression' : '', 'chunk_length_kb' : 32 };");
-        assertSchemaOption("compression", map("enabled", "false"));
 
         createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
                 + " WITH compression = { 'enabled' : 'false'};");
@@ -703,14 +707,6 @@ public class CreateTest extends CQLTester
                                            "CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
                                            + " WITH compression = { 'enabled' : 'false', 'chunk_length_in_kb' : 32};");
 
-        assertThrowsConfigurationException("The 'sstable_compression' option must not be used if the compression algorithm is already specified by the 'class' option",
-                                           "CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                                           + " WITH compression = { 'sstable_compression' : 'SnappyCompressor', 'class' : 'SnappyCompressor'};");
-
-        assertThrowsConfigurationException("The 'chunk_length_kb' option must not be used if the chunk length is already specified by the 'chunk_length_in_kb' option",
-                                           "CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
-                                           + " WITH compression = { 'class' : 'SnappyCompressor', 'chunk_length_kb' : 32 , 'chunk_length_in_kb' : 32 };");
-
         assertThrowsConfigurationException("chunk_length_in_kb must be a power of 2",
                                            "CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
                                            + " WITH compression = { 'class' : 'SnappyCompressor', 'chunk_length_in_kb' : 31 };");
@@ -726,6 +722,14 @@ public class CreateTest extends CQLTester
         assertThrowsConfigurationException("Unknown compression options unknownOption",
                                            "CREATE TABLE %s (a text, b int, c int, primary key (a, b))"
                                             + " WITH compression = { 'class' : 'SnappyCompressor', 'unknownOption' : 32 };");
+    }
+
+    @Test
+    public void testNotUsingDeterministicTableIDOnCreate()
+    {
+        createTable("CREATE TABLE %s (id text PRIMARY KEY);");
+        TableMetadata tmd = currentTableMetadata();
+        assertNotEquals(TableId.unsafeDeterministic(tmd.keyspace, tmd.name), tmd.id);
     }
 
     private void assertThrowsConfigurationException(String errorMsg, String createStmt)

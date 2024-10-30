@@ -23,6 +23,8 @@ import com.google.common.collect.ImmutableList;
 
 import org.apache.cassandra.transport.ProtocolVersion;
 
+import static org.apache.cassandra.utils.LocalizeString.toLowerCaseLocalized;
+
 /**
  * Data types supported by cassandra.
  */
@@ -74,7 +76,8 @@ public abstract class DataType
         MAP(33),
         SET(34),
         UDT(48, ProtocolVersion.V3),
-        TUPLE(49, ProtocolVersion.V3);
+        TUPLE(49, ProtocolVersion.V3),
+        VECTOR(50, ProtocolVersion.V5);
 
         final int protocolId;
 
@@ -121,7 +124,7 @@ public abstract class DataType
         @Override
         public String toString()
         {
-            return super.toString().toLowerCase();
+            return toLowerCaseLocalized(super.toString());
         }
     }
 
@@ -435,6 +438,18 @@ public abstract class DataType
     public static CollectionType map(DataType keyType, DataType valueType)
     {
         return map(keyType, valueType, false);
+    }
+
+    /**
+     * Returns the type of vector of {@code elementType} elements with {@code dimensions} dimensions.
+     *
+     * @param elementType the type of the vector elements.
+     * @param dimensions  the number of dimensions of the vector.
+     * @return the type of vectors of {@code elementType} elements and {@code dimensions} dimensions.
+     */
+    public static VectorType vector(DataType elementType, int dimensions)
+    {
+        return new VectorType(elementType, dimensions);
     }
 
     /**

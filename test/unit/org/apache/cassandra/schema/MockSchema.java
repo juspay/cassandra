@@ -19,41 +19,60 @@
 package org.apache.cassandra.schema;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import javax.annotation.Nullable;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
+
+import org.apache.commons.lang3.ObjectUtils;
 
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.BufferDecoratedKey;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.Directories;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.memtable.Memtable;
 import org.apache.cassandra.db.memtable.SkipListMemtable;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.IndexSummary;
 import org.apache.cassandra.io.sstable.SSTableId;
 import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.big.BigFormat;
+import org.apache.cassandra.io.sstable.format.big.BigFormat.Components;
+import org.apache.cassandra.io.sstable.format.big.BigTableReader;
+import org.apache.cassandra.io.sstable.format.bti.BtiFormat;
+import org.apache.cassandra.io.sstable.format.bti.BtiTableReader;
+import org.apache.cassandra.io.sstable.format.bti.PartitionIndex;
+import org.apache.cassandra.io.sstable.indexsummary.IndexSummary;
+import org.apache.cassandra.io.sstable.keycache.KeyCache;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.io.sstable.metadata.MetadataType;
 import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
-import org.apache.cassandra.io.util.ChannelProxy;
+import org.apache.cassandra.io.util.DataOutputStreamPlus;
 import org.apache.cassandra.io.util.File;
 import org.apache.cassandra.io.util.FileHandle;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.Memory;
-import org.apache.cassandra.utils.AlwaysPresentFilter;
+import org.apache.cassandra.service.CacheService;
+import org.apache.cassandra.tcm.ClusterMetadata;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.FilterFactory;
+import org.apache.cassandra.utils.Throwables;
 
 import static org.apache.cassandra.service.ActiveRepairService.UNREPAIRED_SSTABLE;
 
@@ -68,24 +87,34 @@ public class MockSchema
         return sstableIds.computeIfAbsent(idx, ignored -> sstableIdGenerator.get());
     }
 
-    public static Collection<Object[]> sstableIdGenerators()
-    {
-        return Arrays.asList(new Object[]{ Util.newSeqGen() },
-                             new Object[]{ Util.newUUIDGen() });
-    }
+    private static final File tempFile = temp("mocksegmentedfile");
 
     static
     {
         Memory offsets = Memory.allocate(4);
         offsets.setInt(0, 0);
         indexSummary = new IndexSummary(Murmur3Partitioner.instance, offsets, 0, Memory.allocate(4), 0, 0, 0, 1);
+
+        try (DataOutputStreamPlus out = tempFile.newOutputStream(File.WriteMode.OVERWRITE))
+        {
+            out.write(new byte[10]);
+        }
+        catch (IOException ex)
+        {
+            throw Throwables.throwAsUncheckedException(ex);
+        }
+
+        Schema.instance = new MockSchemaProvider();
+        if (DatabaseDescriptor.isDaemonInitialized() || DatabaseDescriptor.isToolInitialized())
+            DatabaseDescriptor.createAllDirectories();
+
     }
+
     private static final AtomicInteger id = new AtomicInteger();
-    public static final Keyspace ks = Keyspace.mockKS(KeyspaceMetadata.create("mockks", KeyspaceParams.simpleTransient(1)));
+    private static final String ksname = "mockks";
+    private static KeyspaceMetadata mockKS = KeyspaceMetadata.create(ksname, KeyspaceParams.simpleTransient(1));
 
     public static final IndexSummary indexSummary;
-
-    private static final File tempFile = temp("mocksegmentedfile");
 
     public static Memtable memtable(ColumnFamilyStore cfs)
     {
@@ -116,6 +145,7 @@ public class MockSchema
     {
         return sstable(generation, size, false, cfs);
     }
+
     public static SSTableReader sstable(int generation, int size, boolean keepRef, ColumnFamilyStore cfs)
     {
         return sstable(generation, size, keepRef, generation, generation, cfs);
@@ -153,53 +183,124 @@ public class MockSchema
 
     public static SSTableReader sstable(int generation, int size, boolean keepRef, long firstToken, long lastToken, int level, ColumnFamilyStore cfs, int minLocalDeletionTime, long timestamp)
     {
+        SSTableFormat<?, ?> format = DatabaseDescriptor.getSelectedSSTableFormat();
         Descriptor descriptor = new Descriptor(cfs.getDirectories().getDirectoryForNewSSTables(),
-                                               cfs.keyspace.getName(),
+                                               cfs.getKeyspaceName(),
                                                cfs.getTableName(),
-                                               sstableId(generation), SSTableFormat.Type.BIG);
-        Set<Component> components = ImmutableSet.of(Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.TOC);
-        for (Component component : components)
-        {
-            File file = new File(descriptor.filenameFor(component));
-            file.createFileIfNotExists();
-        }
-        // .complete() with size to make sstable.onDiskLength work
-        try (FileHandle.Builder builder = new FileHandle.Builder(new ChannelProxy(tempFile)).bufferSize(size);
-             FileHandle fileHandle = builder.complete(size))
-        {
-            if (size > 0)
-            {
-                try
-                {
-                    File file = new File(descriptor.filenameFor(Component.DATA));
-                    Util.setFileLength(file, size);
-                }
-                catch (IOException e)
-                {
-                    throw new RuntimeException(e);
-                }
-            }
-            SerializationHeader header = SerializationHeader.make(cfs.metadata(), Collections.emptyList());
-            MetadataCollector collector = new MetadataCollector(cfs.metadata().comparator);
-            collector.update(new DeletionTime(timestamp, minLocalDeletionTime));
-            StatsMetadata metadata = (StatsMetadata) collector.sstableLevel(level)
-                                                              .finalizeMetadata(cfs.metadata().partitioner.getClass().getCanonicalName(), 0.01f, UNREPAIRED_SSTABLE, null, false, header)
-                                                              .get(MetadataType.STATS);
-            SSTableReader reader = SSTableReader.internalOpen(descriptor, components, cfs.metadata,
-                                                              fileHandle.sharedCopy(), fileHandle.sharedCopy(), indexSummary.sharedCopy(),
-                                                              new AlwaysPresentFilter(), 1L, metadata, SSTableReader.OpenReason.NORMAL, header);
-            reader.first = readerBounds(firstToken);
-            reader.last = readerBounds(lastToken);
-            if (!keepRef)
-                reader.selfRef().release();
-            return reader;
-        }
+                                               sstableId(generation),
+                                               format);
 
+        if (BigFormat.is(format))
+        {
+            Set<Component> components = ImmutableSet.of(Components.DATA, Components.PRIMARY_INDEX, Components.FILTER, Components.TOC);
+            for (Component component : components)
+            {
+                File file = descriptor.fileFor(component);
+                file.createFileIfNotExists();
+            }
+            // .complete() with size to make sstable.onDiskLength work
+            try (FileHandle fileHandle = new FileHandle.Builder(tempFile).bufferSize(size).withLengthOverride(size).complete())
+            {
+                maybeSetDataLength(descriptor, size);
+                SerializationHeader header = SerializationHeader.make(cfs.metadata(), Collections.emptyList());
+                MetadataCollector collector = new MetadataCollector(cfs.metadata().comparator);
+                collector.update(DeletionTime.build(timestamp, minLocalDeletionTime));
+                BufferDecoratedKey first = readerBounds(firstToken);
+                BufferDecoratedKey last = readerBounds(lastToken);
+                StatsMetadata metadata =
+                                       (StatsMetadata) collector.sstableLevel(level)
+                                                                .finalizeMetadata(cfs.metadata().partitioner.getClass().getCanonicalName(),
+                                                                                  0.01f,
+                                                                                  UNREPAIRED_SSTABLE,
+                                                                                  null,
+                                                                                  false,
+                                                                                  header,
+                                                                                  first.retainable().getKey().slice(),
+                                                                                  last.retainable().getKey().slice())
+                                                                .get(MetadataType.STATS);
+                BigTableReader reader = new BigTableReader.Builder(descriptor).setComponents(components)
+                                                                              .setTableMetadataRef(cfs.metadata)
+                                                                              .setDataFile(fileHandle.sharedCopy())
+                                                                              .setIndexFile(fileHandle.sharedCopy())
+                                                                              .setIndexSummary(indexSummary.sharedCopy())
+                                                                              .setFilter(FilterFactory.AlwaysPresent)
+                                                                              .setMaxDataAge(1L)
+                                                                              .setStatsMetadata(metadata)
+                                                                              .setOpenReason(SSTableReader.OpenReason.NORMAL)
+                                                                              .setSerializationHeader(header)
+                                                                              .setFirst(first)
+                                                                              .setLast(last)
+                                                                              .setKeyCache(cfs.metadata().params.caching.cacheKeys ? new KeyCache(CacheService.instance.keyCache)
+                                                                                                                                   : KeyCache.NO_CACHE)
+                                                                              .build(cfs, false, false);
+                if (!keepRef)
+                    reader.selfRef().release();
+                return reader;
+            }
+        }
+        else if (BtiFormat.is(format))
+        {
+            Set<Component> components = ImmutableSet.of(Components.DATA, BtiFormat.Components.PARTITION_INDEX, BtiFormat.Components.ROW_INDEX, Components.FILTER, Components.TOC);
+            for (Component component : components)
+            {
+                File file = descriptor.fileFor(component);
+                file.createFileIfNotExists();
+            }
+            // .complete() with size to make sstable.onDiskLength work
+            try (FileHandle fileHandle = new FileHandle.Builder(tempFile).bufferSize(size).withLengthOverride(size).complete())
+            {
+                maybeSetDataLength(descriptor, size);
+                SerializationHeader header = SerializationHeader.make(cfs.metadata(), Collections.emptyList());
+                MetadataCollector collector = new MetadataCollector(cfs.metadata().comparator);
+                collector.update(DeletionTime.build(timestamp, minLocalDeletionTime));
+                BufferDecoratedKey first = readerBounds(firstToken);
+                BufferDecoratedKey last = readerBounds(lastToken);
+                StatsMetadata metadata = (StatsMetadata) collector.sstableLevel(level)
+                                                                  .finalizeMetadata(cfs.metadata().partitioner.getClass().getCanonicalName(), 0.01f, UNREPAIRED_SSTABLE, null, false, header, first.retainable().getKey(), last.retainable().getKey())
+                                                                  .get(MetadataType.STATS);
+                BtiTableReader reader = new BtiTableReader.Builder(descriptor).setComponents(components)
+                                                                              .setTableMetadataRef(cfs.metadata)
+                                                                              .setDataFile(fileHandle.sharedCopy())
+                                                                              .setPartitionIndex(new PartitionIndex(fileHandle.sharedCopy(), 0, 0, readerBounds(firstToken), readerBounds(lastToken)))
+                                                                              .setRowIndexFile(fileHandle.sharedCopy())
+                                                                              .setFilter(FilterFactory.AlwaysPresent)
+                                                                              .setMaxDataAge(1L)
+                                                                              .setStatsMetadata(metadata)
+                                                                              .setOpenReason(SSTableReader.OpenReason.NORMAL)
+                                                                              .setSerializationHeader(header)
+                                                                              .setFirst(readerBounds(firstToken))
+                                                                              .setLast(readerBounds(lastToken))
+                                                                              .build(cfs, false, false);
+                if (!keepRef)
+                    reader.selfRef().release();
+                return reader;
+            }
+        }
+        else
+        {
+            throw Util.testMustBeImplementedForSSTableFormat();
+        }
+    }
+
+    private static void maybeSetDataLength(Descriptor descriptor, long size)
+    {
+        if (size > 0)
+        {
+            try
+            {
+                File file = descriptor.fileFor(Components.DATA);
+                Util.setFileLength(file, size);
+            }
+            catch (IOException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     public static ColumnFamilyStore newCFS()
     {
-        return newCFS(ks.getName());
+        return newCFS(ksname);
     }
 
     public static ColumnFamilyStore newCFS(String ksname)
@@ -209,7 +310,7 @@ public class MockSchema
 
     public static ColumnFamilyStore newCFS(Function<TableMetadata.Builder, TableMetadata.Builder> options)
     {
-        return newCFS(ks.getName(), options);
+        return newCFS(ksname, options);
     }
 
     public static ColumnFamilyStore newCFS(String ksname, Function<TableMetadata.Builder, TableMetadata.Builder> options)
@@ -219,10 +320,14 @@ public class MockSchema
 
     public static ColumnFamilyStore newCFS(TableMetadata metadata)
     {
-        return new ColumnFamilyStore(ks, metadata.name, Util.newSeqGen(), new TableMetadataRef(metadata), new Directories(metadata), false, false, false);
+        Tables tables = mockKS.tables.getNullable(metadata.name) == null
+                        ? mockKS.tables.with(metadata)
+                        : mockKS.tables.withSwapped(metadata);
+        mockKS = mockKS.withSwapped(tables);
+        return new ColumnFamilyStore(new Keyspace(mockKS), metadata.name, Util.newSeqGen(), metadata, new Directories(metadata), false, false);
     }
 
-    public static TableMetadata newTableMetadata(String ksname)
+    private static TableMetadata newTableMetadata(String ksname)
     {
         return newTableMetadata(ksname, "mockcf" + (id.incrementAndGet()));
     }
@@ -270,6 +375,136 @@ public class MockSchema
             String[] children = dir.tryListNames();
             for (String child : children)
                 FileUtils.deleteRecursive(new File(dir, child));
+        }
+    }
+
+    public static class MockSchemaProvider implements SchemaProvider
+    {
+        private final SchemaProvider originalSchemaProvider = Schema.instance;
+
+        @Override
+        public Set<String> getKeyspaces()
+        {
+            Set<String> kss = new HashSet<>(originalSchemaProvider.getKeyspaces());
+            kss.add(ksname);
+            return kss;
+        }
+
+        @Override
+        public int getNumberOfTables()
+        {
+            return originalSchemaProvider.getNumberOfTables() + mockKS.tables.size();
+        }
+
+        @Override
+        public ClusterMetadata submit(SchemaTransformation transformation)
+        {
+            return originalSchemaProvider.submit(transformation);
+        }
+
+        @Override
+        public Keyspaces localKeyspaces()
+        {
+            return originalSchemaProvider.localKeyspaces();
+        }
+
+        @Override
+        public Keyspaces distributedKeyspaces()
+        {
+            return originalSchemaProvider.distributedKeyspaces().with(mockKS);
+        }
+
+        @Override
+        public Keyspaces distributedAndLocalKeyspaces()
+        {
+            return Keyspaces.NONE.with(localKeyspaces()).with(distributedKeyspaces());
+        }
+
+        @Override
+        public Keyspaces getUserKeyspaces()
+        {
+            return distributedKeyspaces().without(SchemaConstants.REPLICATED_SYSTEM_KEYSPACE_NAMES);
+        }
+
+        @Override
+        public void registerListener(SchemaChangeListener listener)
+        {
+            originalSchemaProvider.registerListener(listener);
+        }
+
+        @Override
+        public void unregisterListener(SchemaChangeListener listener)
+        {
+            originalSchemaProvider.unregisterListener(listener);
+        }
+
+        public SchemaChangeNotifier schemaChangeNotifier()
+        {
+            return originalSchemaProvider.schemaChangeNotifier();
+        }
+
+        @Override
+        public Optional<TableMetadata> getIndexMetadata(String keyspace, String index)
+        {
+            return originalSchemaProvider.getIndexMetadata(keyspace, index);
+        }
+
+        @Override
+        public Iterable<TableMetadata> getTablesAndViews(String keyspaceName)
+        {
+            Preconditions.checkNotNull(keyspaceName);
+            KeyspaceMetadata ksm = ObjectUtils.getFirstNonNull(() -> distributedKeyspaces().getNullable(keyspaceName),
+                                                               () -> localKeyspaces().getNullable(keyspaceName));
+            Preconditions.checkNotNull(ksm, "Keyspace %s not found", keyspaceName);
+            return ksm.tablesAndViews();
+        }
+
+        @Nullable
+        @Override
+        public Keyspace getKeyspaceInstance(String keyspaceName)
+        {
+            if (isMockKS(keyspaceName))
+                return new Keyspace(mockKS);
+
+            return originalSchemaProvider.getKeyspaceInstance(keyspaceName);
+        }
+
+        @Nullable
+        @Override
+        public KeyspaceMetadata getKeyspaceMetadata(String keyspaceName)
+        {
+            if (isMockKS(keyspaceName))
+                return mockKS;
+            return originalSchemaProvider.getKeyspaceMetadata(keyspaceName);
+        }
+
+        @Nullable
+        @Override
+        public TableMetadata getTableMetadata(TableId id)
+        {
+            if (mockKS.tables.containsTable(id))
+                return mockKS.tables.getNullable(id);
+            return originalSchemaProvider.getTableMetadata(id);
+        }
+
+        @Nullable
+        @Override
+        public TableMetadata getTableMetadata(String keyspace, String table)
+        {
+            if (isMockKS(keyspace) || mockKS.tables.stream().anyMatch(tm -> tm.name.equals(table)))
+                return mockKS.tables.getNullable(table);
+            return originalSchemaProvider.getTableMetadata(keyspace, table);
+        }
+
+        @Override
+        public void saveSystemKeyspace()
+        {
+            originalSchemaProvider.saveSystemKeyspace();
+        }
+
+        private boolean isMockKS(String keyspaceName)
+        {
+            return keyspaceName.equals(ksname)|| keyspaceName.equals(mockKS.name) || mockKS.tables.stream().anyMatch(tm -> tm.keyspace.equals(keyspaceName));
         }
     }
 }

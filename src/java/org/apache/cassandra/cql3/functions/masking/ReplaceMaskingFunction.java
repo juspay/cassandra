@@ -21,11 +21,14 @@ package org.apache.cassandra.cql3.functions.masking;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.cassandra.cql3.functions.Arguments;
+import org.apache.cassandra.cql3.functions.FunctionArguments;
 import org.apache.cassandra.cql3.functions.FunctionFactory;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.cql3.functions.FunctionParameter;
 import org.apache.cassandra.cql3.functions.NativeFunction;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
@@ -45,15 +48,23 @@ public class ReplaceMaskingFunction extends MaskingFunction
     }
 
     @Override
-    public final ByteBuffer execute(ProtocolVersion protocolVersion, List<ByteBuffer> parameters)
+    public Arguments newArguments(ProtocolVersion version)
     {
-        return parameters.get(1);
+        return FunctionArguments.newNoopInstance(version, 2);
+    }
+
+    @Override
+    public ByteBuffer execute(Arguments arguments) throws InvalidRequestException
+    {
+        return arguments.get(1);
     }
 
     /** @return a {@link FunctionFactory} to build new {@link ReplaceMaskingFunction}s. */
     public static FunctionFactory factory()
     {
-        return new MaskingFunction.Factory(NAME, FunctionParameter.anyType(true), FunctionParameter.sameAsFirst())
+        return new MaskingFunction.Factory(NAME,
+                                           FunctionParameter.anyType(true),
+                                           FunctionParameter.sameAs(0, true, FunctionParameter.anyType(true)))
         {
             @Override
             protected NativeFunction doGetOrCreateFunction(List<AbstractType<?>> argTypes, AbstractType<?> receiverType)

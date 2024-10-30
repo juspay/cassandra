@@ -32,8 +32,10 @@ import java.util.stream.Collectors;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Uninterruptibles;
+import org.junit.Assume;
 import org.junit.Test;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
@@ -44,6 +46,7 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.index.Index;
 import org.apache.cassandra.index.StubIndex;
+import org.apache.cassandra.index.internal.CassandraIndex;
 import org.apache.cassandra.index.internal.CollatedViewIndexBuilder;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.ReducingKeyIterator;
@@ -261,7 +264,7 @@ public class CancelCompactionsTest extends CQLTester
             Range<Token> range = new Range<>(token(-1), token(49));
 
             TimeUUID prsid = nextTimeUUID();
-            ActiveRepairService.instance.registerParentRepairSession(prsid, InetAddressAndPort.getLocalHost(), Collections.singletonList(cfs), Collections.singleton(range), true, 1, true, PreviewKind.NONE);
+            ActiveRepairService.instance().registerParentRepairSession(prsid, InetAddressAndPort.getLocalHost(), Collections.singletonList(cfs), Collections.singleton(range), true, 1, true, PreviewKind.NONE);
 
             InetAddressAndPort local = FBUtilities.getBroadcastAddressAndPort();
             RangesAtEndpoint rae = RangesAtEndpoint.builder(local).add(new Replica(local, range, true)).build();
@@ -361,7 +364,7 @@ public class CancelCompactionsTest extends CQLTester
 
     long first(SSTableReader sstable)
     {
-        return (long)sstable.first.getToken().getTokenValue();
+        return (long) sstable.getFirst().getToken().getTokenValue();
     }
 
     Token token(long t)
@@ -426,6 +429,8 @@ public class CancelCompactionsTest extends CQLTester
     @Test
     public void test2iCancellation() throws Throwable
     {
+        Assume.assumeTrue("Tests legacy index",
+                           DatabaseDescriptor.getDefaultSecondaryIndex().equals(CassandraIndex.NAME));
         createTable("create table %s (id int primary key, something int)");
         createIndex("create index on %s(something)");
         getCurrentColumnFamilyStore().disableAutoCompaction();
@@ -446,6 +451,8 @@ public class CancelCompactionsTest extends CQLTester
     @Test
     public void testSubrangeCompactionWith2i() throws Throwable
     {
+        Assume.assumeTrue("Tests legacy index",
+                          DatabaseDescriptor.getDefaultSecondaryIndex().equals(CassandraIndex.NAME));
         createTable("create table %s (id int primary key, something int)");
         createIndex("create index on %s(something)");
         getCurrentColumnFamilyStore().disableAutoCompaction();
@@ -468,7 +475,8 @@ public class CancelCompactionsTest extends CQLTester
 
         for (int i = 0; i < 10; i++)
         {
-            execute("insert into %s (id, something) values (?,?)", i, i);
+            for (int j = 0; j < 3; ++j) // write more than once to ensure overlap for UCS
+                execute("insert into %s (id, something) values (?,?)", i * (j+1), i + j);
             flush();
         }
         AbstractCompactionTask ct = null;
