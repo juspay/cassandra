@@ -5,6 +5,7 @@ on:
       - juspay-4.2
       - cassandra-4.1
       - juspay-cassandra-5.0.3
+      - juspay-cassandra-5.0.3-test
 jobs:
   build:
     runs-on: ubuntu-latest
